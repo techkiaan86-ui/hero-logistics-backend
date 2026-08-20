@@ -144,6 +144,55 @@ exports.create = async (req, res, next) => {
       delete payload.scheduledDate;
     }
 
+    // Resolve customerId if customer name string is passed instead of customerId
+    if (payload.customer && !payload.customerId && typeof payload.customer === 'string') {
+      const custName = payload.customer.trim();
+      let foundCust = await prisma.customer.findFirst({
+        where: {
+          name: { contains: custName },
+          ...(payload.companyId && { companyId: payload.companyId })
+        }
+      });
+      if (!foundCust) {
+        foundCust = await prisma.customer.create({
+          data: {
+            name: custName,
+            ...(payload.companyId && { companyId: payload.companyId })
+          }
+        });
+      }
+      payload.customerId = foundCust.id;
+    }
+    delete payload.customer;
+
+    // Convert plain stops array to Prisma nested create object
+    if (Array.isArray(payload.stops)) {
+      const stopsData = payload.stops.map((s, idx) => ({
+        type: s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF'),
+        sequenceIndex: typeof s.sequenceIndex === 'number' ? s.sequenceIndex : idx,
+        address: s.address || 'Address Not Specified',
+        contactName: s.contactName || null,
+        contactPhone: s.contactPhone || null,
+        instructions: s.instructions || null
+      }));
+      payload.stops = { create: stopsData };
+    }
+
+    // Convert plain items array to Prisma nested create object
+    if (Array.isArray(payload.items)) {
+      const itemsData = payload.items.map(i => ({
+        stockRef: i.stockRef || i.rego || i.vin || 'ITEM-REF',
+        make: i.make || null,
+        model: i.model || null,
+        rego: i.rego || null,
+        vin: i.vin || null,
+        year: i.year ? parseInt(i.year) : null,
+        color: i.colour || i.color || null,
+        quantity: i.quantity ? parseInt(i.quantity) : 1
+      }));
+      payload.items = { create: itemsData };
+    }
+
     // Clean up frontend only parameters that are not in schema
     delete payload.pickupLocation;
     delete payload.deliveryLocation;
@@ -157,7 +206,9 @@ exports.create = async (req, res, next) => {
       include: {
         driver: true,
         truck: true,
-        customer: true
+        customer: true,
+        stops: true,
+        items: true
       }
     });
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
@@ -231,7 +282,14 @@ exports.update = async (req, res, next) => {
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const findWhere = { id };
+    const findWhere = {
+      OR: [
+        { id: id },
+        { loadRef: id },
+        { loadNumber: id },
+        { referenceNumber: id }
+      ]
+    };
     if (req.tenantId) {
       findWhere.companyId = req.tenantId;
     }
@@ -252,6 +310,19 @@ exports.delete = async (req, res, next) => {
         message: 'Load not found in this company context'
       }, HTTP_STATUS.NOT_FOUND);
     }
+
+    // Cascade delete child records to prevent foreign key constraint failures (P2003)
+    await prisma.customerInvoice.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.preStartChecklist.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.telemetryLog.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.timesheet.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.routeStop.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.loadItem.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.loadExpense.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.loadDocument.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.document.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.loadActivity.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
+    await prisma.message.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
 
     await prisma.load.delete({ where: { id: targetLoad.id } });
     

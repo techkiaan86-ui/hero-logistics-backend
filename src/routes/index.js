@@ -90,6 +90,7 @@ const DriverActivityRoutes = require('./DriverActivityRoutes');
 const DriverMessageRoutes = require('./DriverMessageRoutes');
 const DriverSuperInfoRoutes = require('./DriverSuperInfoRoutes');
 const SuperAdminDashboardRoutes = require('./SuperAdminDashboardRoutes');
+const PlatformSettingRoutes = require('./PlatformSettingRoutes');
 const PaymentGatewayConfigRoutes = require('./PaymentGatewayConfigRoutes');
 const WorkflowRuleRoutes = require('./WorkflowRuleRoutes');
 const UploadRoutes = require('./UploadRoutes');
@@ -209,6 +210,8 @@ router.use('/regional-terminals', RegionalTerminalRoutes);
 router.use('/company-admin', CompanyAdminPortalRoutes);
 router.use('/company-admin/dashboard', CompanyAdminDashboardRoutes);
 router.use('/super-admin/dashboard', SuperAdminDashboardRoutes);
+router.use('/super-admin/settings', PlatformSettingRoutes);
+router.use('/platform-settings', PlatformSettingRoutes);
 router.use('/payment-gateway-config', PaymentGatewayConfigRoutes);
 router.use('/dashboard-metrics', SuperAdminDashboardRoutes);
 

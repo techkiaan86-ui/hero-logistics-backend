@@ -2919,3 +2919,26 @@ model RegionalTerminal {
 
   @@map("regional_terminal")
 }
+
+model PlatformSetting {
+  id                     String   @id @default(uuid())
+  defaultCurrency        String   @default("USD")
+  defaultLanguage        String   @default("en")
+  defaultTrialDays       Int      @default(14)
+  basePricePerCompany    Float    @default(299.00)
+  forceMfaAdmins         Boolean  @default(true)
+  forceMfaTenants        Boolean  @default(false)
+  passwordComplexity     String   @default("MEDIUM")
+  minPasswordLength      Int      @default(8)
+  maxLoginAttempts       Int      @default(5)
+  lockoutDurationMinutes Int      @default(15)
+  stripePublishableKey   String?  @db.Text
+  stripeWebhookSecret    String?  @db.Text
+  googleMapsApiKey       String?  @db.Text
+  emailService           String   @default("sendgrid")
+  emailApiKey            String?  @db.Text
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("platform_setting")
+}

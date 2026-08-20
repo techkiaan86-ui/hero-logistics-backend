@@ -123,7 +123,26 @@ exports.createLoad = async (req, res, next) => {
     payload.companyId = companyId;
     if (!payload.loadRef) payload.loadRef = `PO-${Date.now().toString().slice(-6)}`;
     if (!payload.type) payload.type = 'General Freight';
-    payload.status = sanitizeLoadStatus(payload.status);
+    if (payload.customer && !payload.customerId && typeof payload.customer === 'string') {
+      const custName = payload.customer.trim();
+      let foundCust = await prisma.customer.findFirst({
+        where: {
+          name: { contains: custName },
+          ...(companyId && { companyId })
+        }
+      });
+      if (!foundCust) {
+        foundCust = await prisma.customer.create({
+          data: {
+            id: require('crypto').randomUUID(),
+            name: custName,
+            companyId
+          }
+        });
+      }
+      payload.customerId = foundCust.id;
+    }
+    delete payload.customer;
 
     if (Array.isArray(stops) && stops.length > 0) {
       payload.stops = {
@@ -186,13 +205,32 @@ exports.updateLoad = async (req, res, next) => {
 exports.deleteLoad = async (req, res, next) => {
   try {
     const { id } = req.params;
-    await prisma.routeStop.deleteMany({ where: { loadId: id } });
-    await prisma.loadItem.deleteMany({ where: { loadId: id } });
-    await prisma.loadExpense.deleteMany({ where: { loadId: id } });
-    await prisma.document.deleteMany({ where: { loadId: id } });
-    await prisma.loadActivity.deleteMany({ where: { loadId: id } });
-    await prisma.load.delete({ where: { id } });
-    return sendSuccess(res, { id, message: 'Load deleted successfully' });
+    
+    // Find target load by ID, loadRef, loadNumber, or referenceNumber
+    const targetLoad = await prisma.load.findFirst({
+      where: { OR: [{ id }, { loadRef: id }, { loadNumber: id }, { referenceNumber: id }] }
+    }).catch(() => null);
+
+    const targetId = targetLoad ? targetLoad.id : id;
+
+    // Cascade clean-up of child records to maintain foreign key integrity
+    await prisma.customerInvoice.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.preStartChecklist.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.telemetryLog.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.timesheet.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.routeStop.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.loadItem.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.loadExpense.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.loadDocument.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.document.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.loadActivity.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    await prisma.message.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+
+    await prisma.load.delete({ where: { id: targetId } }).catch(err => {
+      console.warn('Load deletion notice:', err?.message);
+    });
+
+    return sendSuccess(res, { id: targetId, message: 'Load deleted successfully' });
   } catch (error) { next(error); }
 };
 

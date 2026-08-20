@@ -139,10 +139,22 @@ exports.update = async (req, res, next) => {
     const { id } = req.params;
     const { permissions, name: _ignored, slug: _ignoredSlug, isSystem: _ignoredSystem, ...rest } = req.body;
 
-    const existing = await prisma.customRole.findFirst({ where: { id }, include: { permissions: true } });
+    let existing = await prisma.customRole.findFirst({
+      where: {
+        OR: [
+          { id },
+          { slug: id },
+          { slug: id.toUpperCase() },
+          { slug: id.replace(/^role-/, '').replace(/-/g, '_').toUpperCase() },
+          { name: id }
+        ]
+      },
+      include: { permissions: true }
+    });
     if (!existing) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Role not found' }, HTTP_STATUS.NOT_FOUND);
     }
+    const targetRealId = existing.id;
 
     // Hierarchy check for Company Admin users
     const callerRole = req.user?.role;
@@ -184,7 +196,7 @@ exports.update = async (req, res, next) => {
     }
 
     // Determine target record
-    let targetId = id;
+    let targetId = targetRealId;
     if (existing.isSystem && req.tenantId && !isSuperAdmin) {
       let override = await prisma.customRole.findFirst({
         where: { slug: existing.slug, companyId: req.tenantId }
