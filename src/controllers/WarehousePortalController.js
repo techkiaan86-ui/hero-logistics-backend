@@ -1645,9 +1645,17 @@ exports.getCurrentShift = async (req, res, next) => {
     const userId = req.user?.userId || req.user?.id || 'attendant_1';
     const shift = activeShiftsStore[userId];
     if (shift && shift.status === 'ACTIVE') {
-      return sendSuccess(res, shift);
+      return sendSuccess(res, {
+        ...shift,
+        clockedIn: true,
+        clockInTime: shift.clockIn
+      });
     }
-    return sendSuccess(res, null);
+    return sendSuccess(res, {
+      status: 'OFF_DUTY',
+      clockedIn: false,
+      clockInTime: null
+    });
   } catch (error) {
     next(error);
   }
@@ -3555,7 +3563,7 @@ exports.getYardMap = async (req, res, next) => {
       prisma.loadItem.count({ where: { zone: 'Zone D', stockStatus: { in: ['IN_STORAGE', 'STAGED'] }, ...(tenantId && { warehouse: { branch: { companyId: tenantId } } }) } }),
       prisma.loadItem.count({ where: { zone: 'Zone E', stockStatus: { in: ['IN_STORAGE', 'STAGED'] }, ...(tenantId && { warehouse: { branch: { companyId: tenantId } } }) } }),
       prisma.loadItem.count({ where: { zone: 'Cold Storage', stockStatus: { in: ['IN_STORAGE', 'STAGED'] }, ...(tenantId && { warehouse: { branch: { companyId: tenantId } } }) } }),
-      prisma.timesheet.count({ where: { clockOutAt: null, ...(tenantId && { tenantId }) } })
+      prisma.timesheet.count({ where: { clockOutAt: null, ...(tenantId && { companyId: tenantId }) } })
     ]);
 
     const available = Math.max(0, totalCapacity - inUse);

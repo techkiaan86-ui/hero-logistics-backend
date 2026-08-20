@@ -71,6 +71,7 @@ router.put('/profile', ctrl.updateStaffProfile);
 
 // 13. Shift / Time Clock (Phase C) — Yard Attendant Clock In / Out
 router.get('/shift/current', ctrl.getCurrentShift);
+router.get('/shift/status', ctrl.getCurrentShift);
 router.post('/shift/clock-in', ctrl.clockInShift);
 router.post('/shift/clock-out', ctrl.clockOutShift);
 router.get('/shift/history', ctrl.getShiftHistory);
