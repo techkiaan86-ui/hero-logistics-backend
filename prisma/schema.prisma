@@ -566,6 +566,7 @@ model Company {
   registrationNumber String?
   dotNumber          String?
   taxId              String?
+  defaultTaxRate     Float         @default(0.10)
   adminEmail         String?
   cardBrand          String? // e.g., "Visa"
   cardLast4          String? // e.g., "8812"
@@ -2073,11 +2074,12 @@ model CustomerInvoice {
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])
 
-  loadId String?
+  loadId String? @unique
   load   Load?   @relation(fields: [loadId], references: [id])
 
-  amount  Float
-  status  CustomerInvoiceStatus @default(DRAFT)
+  amount         Float
+  appliedTaxRate Float                 @default(0.10)
+  status         CustomerInvoiceStatus @default(DRAFT)
   dueDate DateTime?
   pdfUrl  String?
   notes   String?               @db.Text

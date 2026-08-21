@@ -1,6 +1,7 @@
 const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
+const { saveBase64Image } = require('../utils/fileStorage');
 
 /**
  * Helper to resolve the driver record for the request
@@ -1265,11 +1266,24 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
     const driver = await resolveDriver(req);
     if (!driver) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
     const { loadId, mode, notes, signature, photos } = req.body;
+    const signaturePath = signature ? saveBase64Image(signature, 'signatures') : null;
 
     if (loadId && prisma.load) {
       await prisma.load.updateMany({
         where: { id: loadId, driverId: driver.id },
         data: { status: 'DELIVERED', dispatchNotes: notes || undefined }
+      }).catch(() => null);
+    }
+
+    if (driver && loadId && prisma.deliveryPOD) {
+      await prisma.deliveryPOD.create({
+        data: {
+          driverId: driver.id,
+          loadId: loadId,
+          signeeName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
+          signatureUrl: signaturePath,
+          deliveryNotes: notes || 'Delivery completed'
+        }
       }).catch(() => null);
     }
 
@@ -1279,7 +1293,7 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
           driverId: driver.id,
           loadId: loadId || undefined,
           recipientName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
-          signatureUrl: signature || null,
+          signatureUrl: signaturePath,
           photoUrls: photos ? JSON.stringify(photos) : null,
           notes: notes || 'Delivery completed',
           status: 'COMPLETED'
@@ -1289,6 +1303,7 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
 
     return sendSuccess(res, {
       success: true,
+      signatureUrl: signaturePath,
       message: 'Stop confirmed as Delivered! POD captured and Dispatch & Customer notified.'
     });
   } catch (error) {

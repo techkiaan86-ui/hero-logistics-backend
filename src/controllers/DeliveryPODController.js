@@ -65,10 +65,16 @@ exports.getById = async (req, res, next) => {
   }
 };
 
+const { saveBase64Image } = require('../utils/fileStorage');
+
 // Create new DeliveryPOD
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
+    if (payload.signatureUrl) {
+      payload.signatureUrl = saveBase64Image(payload.signatureUrl, 'signatures');
+    }
+
     if (req.user && req.user.role === 'DRIVER') {
       const driver = await prisma.driver.findFirst({
         where: { userId: req.user.id }

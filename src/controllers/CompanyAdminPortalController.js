@@ -3334,7 +3334,7 @@ exports.getLoadById = async (req, res, next) => {
         documents: { orderBy: { createdAt: 'desc' } },
         invoices: { orderBy: { createdAt: 'desc' } },
         activities: { orderBy: { timestamp: 'desc' } },
-        proofPhotos: true
+        deliveryPods: true
       }
     });
 

@@ -197,7 +197,8 @@ exports.getInvoices = async (req, res, next) => {
     });
 
     let formatted = invoices.map(inv => {
-      const subtotal = Math.round((inv.amount / 1.1) * 100) / 100;
+      const taxRate = inv.appliedTaxRate ?? 0.10;
+      const subtotal = Math.round((inv.amount / (1 + taxRate)) * 100) / 100;
       const gst = Math.round((inv.amount - subtotal) * 100) / 100;
       const pod = inv.load?.deliveryPods?.[0];
       const dueDate = inv.dueDate || new Date(new Date(inv.createdAt).getTime() + 14 * 24 * 60 * 60 * 1000);
@@ -223,6 +224,8 @@ exports.getInvoices = async (req, res, next) => {
         dueDateRaw: dueDate,
         subtotal,
         gst,
+        appliedTaxRate: taxRate,
+        taxRatePercent: `${Math.round(taxRate * 100)}%`,
         total: inv.amount,
         amount: inv.amount,
         paid: inv.status === 'PAID' ? inv.amount : 0,
@@ -328,6 +331,9 @@ exports.createManualInvoice = async (req, res, next) => {
       return sendError(res, { code: ERROR_CODES.BAD_REQUEST, message: 'Customer and amount are required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
+    const company = companyId ? await prisma.company.findFirst({ where: { id: companyId } }).catch(() => null) : null;
+    const appliedTaxRate = company?.defaultTaxRate ?? 0.10;
+
     const count = await prisma.customerInvoice.count();
     const invoiceNumber = `INV-${new Date().getFullYear()}-${String(count + 1050).padStart(4, '0')}`;
 
@@ -336,6 +342,7 @@ exports.createManualInvoice = async (req, res, next) => {
         invoiceNumber,
         customerId: resolvedCustomerId,
         amount: resolvedAmount,
+        appliedTaxRate,
         status: 'DRAFT',
         dueDate: dueDate ? new Date(dueDate) : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         notes: notes || reason || '',

@@ -61,7 +61,7 @@ exports.getById = async (req, res, next) => {
         customer: true,
         stops: true,
         items: true,
-        proofPhotos: true,
+        deliveryPods: true,
         expenses: true
       }
     });

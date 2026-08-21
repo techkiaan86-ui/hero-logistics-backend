@@ -46,11 +46,15 @@ exports.getById = async (req, res, next) => {
   }
 };
 
+const { saveBase64Image } = require('../utils/fileStorage');
+
 // Create new ProofPhoto
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    // if (req.tenantId) payload.tenantId = req.tenantId;
+    if (payload.fileUrl) {
+      payload.fileUrl = saveBase64Image(payload.fileUrl, 'photos');
+    }
 
     const data = await prisma.proofPhoto.create({
       data: payload
