@@ -38,6 +38,7 @@ router.post('/live-tracking/vehicles/:vehicleId/telemetry', ctrl.pushTelemetry);
 // 4. Drivers
 router.get('/drivers', ctrl.getDrivers);
 router.post('/drivers', ctrl.createDriver);
+router.delete('/drivers/:id', ctrl.deleteDriver);
 
 // 5. Vehicles
 router.get('/vehicles', ctrl.getVehicles);
@@ -159,6 +160,7 @@ router.put('/delivery-issues/:id/status', ctrl.updateDeliveryIssueStatus);
 
 // 20. Customers
 router.get('/customers', ctrl.getCustomers);
+router.delete('/customers/:id', ctrl.deleteCustomer);
 
 // 21. Subscription & Billing
 router.get('/subscription-billing', ctrl.getSubscriptionBilling);

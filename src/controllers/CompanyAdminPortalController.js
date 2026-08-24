@@ -260,6 +260,203 @@ exports.getLoadInvoices = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+exports.autoGenerateLoadInvoice = async (loadId, companyId, customAmount = null) => {
+  try {
+    if (!loadId) return null;
+
+    // 1. Idempotency Check: Check if invoice already exists for this load
+    const existingInvoice = await prisma.customerInvoice.findFirst({
+      where: { loadId }
+    }).catch(() => null);
+
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+
+    // 2. Fetch Target Load
+    const targetLoad = await prisma.load.findUnique({
+      where: { id: loadId },
+      include: { customer: true, items: true }
+    }).catch(() => null);
+
+    if (!targetLoad) return null;
+
+    // 3. Customer Resolution
+    let customerId = targetLoad.customerId;
+    if (!customerId) {
+      const targetCompanyId = companyId || targetLoad.companyId;
+      let cust = await prisma.customer.findFirst({
+        where: targetCompanyId ? { companyId: targetCompanyId } : {}
+      }).catch(() => null);
+
+      if (!cust) {
+        const compId = targetCompanyId || (await prisma.company.findFirst().then(c => c?.id).catch(() => null));
+        if (compId) {
+          cust = await prisma.customer.create({
+            data: {
+              id: require('crypto').randomUUID(),
+              name: 'General Customer',
+              companyId: compId
+            }
+          }).catch(() => null);
+        }
+      }
+      if (cust) customerId = cust.id;
+    }
+
+    if (!customerId) return null;
+
+    // 4. Rate / Amount Calculation
+    let amount = customAmount ? parseFloat(customAmount) : 0;
+    if (!amount || amount === 0) {
+      const itemsCount = targetLoad.items?.length || 1;
+      amount = itemsCount * 350.00;
+      if (amount < 500) amount = 1250.00;
+    }
+
+    // 5. Generate Invoice Number & Due Date (14 Days)
+    const crypto = require('crypto');
+    const invNum = `INV-${new Date().getFullYear()}-${Math.floor(10000 + Math.random() * 90000)}`;
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 14);
+
+    // 6. Create CustomerInvoice (status: DRAFT)
+    const invoice = await prisma.customerInvoice.create({
+      data: {
+        id: crypto.randomUUID(),
+        invoiceNumber: invNum,
+        customerId,
+        loadId: targetLoad.id,
+        amount,
+        status: 'DRAFT',
+        dueDate,
+        notes: `Auto-generated draft invoice upon POD delivery confirmation for Load ${targetLoad.loadRef || targetLoad.id}`
+      },
+      include: { customer: { select: { id: true, name: true, email: true } } }
+    });
+
+    return invoice;
+  } catch (err) {
+    console.error('Error in autoGenerateLoadInvoice:', err?.message);
+    return null;
+  }
+};
+
+exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCredit = null) => {
+  try {
+    if (!loadId || !driverId) return null;
+
+    // 1. Resolve Driver & Company ID
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId }
+    }).catch(() => null);
+
+    if (!driver) return null;
+    const targetCompanyId = companyId || driver.companyId;
+    if (!targetCompanyId) return null;
+
+    // 2. Resolve Load to check if already credited
+    const load = await prisma.load.findUnique({
+      where: { id: loadId }
+    }).catch(() => null);
+
+    if (!load) return null;
+
+    // Idempotency check: check if load notes indicate payroll credit already processed
+    if (load.notes && load.notes.includes(`[PAYROLL_CREDITED:${loadId}]`)) {
+      return null;
+    }
+
+    // 3. Determine Trip Pay Credit Amount
+    let tripCredit = customCredit ? parseFloat(customCredit) : 0;
+    if (!tripCredit || tripCredit === 0) {
+      if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
+        tripCredit = parseFloat(driver.payRate);
+      } else {
+        tripCredit = 250.00;
+      }
+    }
+
+    // 4. Resolve Active PayPeriod (or create new DRAFT PayPeriod for driver)
+    const now = new Date();
+    let payPeriod = await prisma.payPeriod.findFirst({
+      where: {
+        driverId: driver.id,
+        companyId: targetCompanyId,
+        status: { in: ['DRAFT', 'PROCESSING', 'PENDING'] }
+      },
+      orderBy: { createdAt: 'desc' }
+    }).catch(() => null);
+
+    if (!payPeriod) {
+      const periodStart = new Date();
+      periodStart.setDate(periodStart.getDate() - periodStart.getDay());
+      const periodEnd = new Date(periodStart);
+      periodEnd.setDate(periodEnd.getDate() + 13);
+
+      const crypto = require('crypto');
+      payPeriod = await prisma.payPeriod.create({
+        data: {
+          id: crypto.randomUUID(),
+          driverId: driver.id,
+          companyId: targetCompanyId,
+          periodStart,
+          periodEnd,
+          frequency: 'FORTNIGHTLY',
+          status: 'DRAFT',
+          loadAllowance: 0,
+          basePay: 0,
+          grossEarnings: 0,
+          paygTax: 0,
+          superAmount: 0,
+          totalDeductions: 0,
+          netPay: 0
+        }
+      }).catch(() => null);
+    }
+
+    if (!payPeriod) return null;
+
+    // 5. Update Load Allowance & Recalculate Earnings using official project formulas
+    const newLoadAllowance = (payPeriod.loadAllowance || 0) + tripCredit;
+    const basePay = payPeriod.basePay || 0;
+    const distanceAllow = payPeriod.distanceAllow || 0;
+    const otherAllowance = payPeriod.otherAllowance || 0;
+    const bonuses = payPeriod.bonuses || 0;
+
+    const grossEarnings = basePay + newLoadAllowance + distanceAllow + otherAllowance + bonuses;
+    const paygTax = grossEarnings * 0.20;
+    const superAmount = grossEarnings * 0.11; // 11% Superannuation Guarantee (Employer Contribution Liability)
+    const totalDeductions = paygTax + (payPeriod.unionFees || 0) + (payPeriod.otherDeductions || 0);
+    const netPay = grossEarnings - totalDeductions;
+
+    // 6. Save Updated PayPeriod
+    const updatedPayPeriod = await prisma.payPeriod.update({
+      where: { id: payPeriod.id },
+      data: {
+        loadAllowance: newLoadAllowance,
+        grossEarnings,
+        paygTax,
+        superAmount,
+        totalDeductions,
+        netPay
+      }
+    });
+
+    // 7. Mark Load notes as credited for idempotency
+    const updatedNotes = `${load.notes || ''} [PAYROLL_CREDITED:${loadId}]`.trim();
+    await prisma.load.update({
+      where: { id: loadId },
+      data: { notes: updatedNotes }
+    }).catch(() => null);
+
+    return updatedPayPeriod;
+  } catch (err) {
+    console.error('Error in autoCreditDriverPayroll:', err?.message);
+    return null;
+  }
+};
+
 exports.createLoadInvoice = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -742,34 +939,8 @@ exports.updateBranch = async (req, res, next) => {
 };
 
 exports.deleteBranch = async (req, res, next) => {
-  try {
-    const companyId = await resolveCompanyId(req);
-    const { id } = req.params;
-
-    // Verify this branch belongs to the authenticated company
-    const whereCheck = { id };
-    if (companyId) whereCheck.companyId = companyId;
-    const existing = await prisma.branch.findFirst({ where: whereCheck });
-    if (!existing) {
-      return res.status(HTTP_STATUS.NO_CONTENT).send();
-    }
-
-    // Safe cleanup: null-out all linked records
-    await Promise.allSettled([
-      prisma.driver.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.warehouse.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.asset.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.user.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.vehicle.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.customer.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-    ]);
-
-    await prisma.branch.delete({ where: { id } });
-    return res.status(HTTP_STATUS.NO_CONTENT).send();
-  } catch (error) {
-    if (error.code === 'P2025') return res.status(HTTP_STATUS.NO_CONTENT).send();
-    next(error);
-  }
+  const BranchController = require('./BranchController');
+  return BranchController.delete(req, res, next);
 };
 
 // ----------------------------------------------------------------------
@@ -883,8 +1054,7 @@ exports.getAssets = async (req, res, next) => {
         manager: customMeta.manager || preset.manager || 'Operations Manager',
         currency: customMeta.currency || preset.currency || 'AUD',
         established: customMeta.established || preset.established || '2020',
-        status: 'Active',
-        photo: customMeta.photo || preset.photo || 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=600&auto=format&fit=crop&q=60'
+        photo: customMeta.photo || null
       };
     });
 
@@ -912,6 +1082,8 @@ exports.getAssets = async (req, res, next) => {
         model: a.model || '',
         year: a.year || new Date().getFullYear(),
         serialNumber: a.serialNumber || '',
+        photoUrl: a.photoUrl || null,
+        image: a.photoUrl || null,
         branch: a.branch?.name || 'Sydney Head Office',
         location: a.warehouseId ? `Warehouse ${a.warehouseId.slice(0, 4)}` : 'Yard - Sydney HO',
         assignedTo: assigned,
@@ -980,26 +1152,51 @@ exports.createAsset = async (req, res, next) => {
       'Poor': 'POOR'
     };
 
-    const assetId = payload.assetId || payload.serialNumber || `AST-${Math.floor(10000 + Math.random() * 90000)}`;
+    let assetId = payload.assetId || payload.serialNumber || `AST-${Math.floor(10000 + Math.random() * 90000)}`;
 
-    const newAsset = await prisma.asset.create({
-      data: {
-        assetId,
-        name: payload.name || 'New Asset',
-        category: payload.category || 'Equipment',
-        type: payload.type || payload.makeModel || 'General',
-        make: payload.make || null,
-        model: payload.model || null,
-        year: payload.year ? parseInt(payload.year) : null,
-        serialNumber: payload.serialNumber || null,
-        status: statusMap[payload.status] || 'ACTIVE',
-        condition: conditionMap[payload.condition] || 'GOOD',
-        purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
-        purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
-        branchId: payload.branchId || branchObj?.id || 'fce20507-9461-4961-9143-ac4b2a3a2403'
-      },
-      include: { branch: true }
-    });
+    const existingId = await prisma.asset.findFirst({ where: { assetId } });
+    if (existingId) {
+      assetId = `${assetId}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    const assetData = {
+      assetId,
+      name: payload.name || 'New Asset',
+      category: payload.category || 'Equipment',
+      type: payload.type || payload.makeModel || 'General',
+      make: payload.make || null,
+      model: payload.model || null,
+      year: payload.year ? parseInt(payload.year) : null,
+      serialNumber: payload.serialNumber || null,
+      status: statusMap[payload.status] || 'ACTIVE',
+      condition: conditionMap[payload.condition] || 'GOOD',
+      purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
+      purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
+      branchId: payload.branchId || branchObj?.id || 'fce20507-9461-4961-9143-ac4b2a3a2403'
+    };
+
+    const photoVal = payload.photoUrl || payload.image || payload.photo || null;
+
+    let newAsset;
+    try {
+      newAsset = await prisma.asset.create({
+        data: { ...assetData, photoUrl: photoVal },
+        include: { branch: true }
+      });
+    } catch (createErr) {
+      newAsset = await prisma.asset.create({
+        data: assetData,
+        include: { branch: true }
+      });
+      if (photoVal) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE \`asset\` SET \`photoUrl\` = ? WHERE \`id\` = ?;`,
+          photoVal,
+          newAsset.id
+        ).catch(() => {});
+        newAsset.photoUrl = photoVal;
+      }
+    }
 
     return sendSuccess(res, newAsset, HTTP_STATUS.CREATED);
   } catch (error) { next(error); }
@@ -1047,11 +1244,30 @@ exports.updateAsset = async (req, res, next) => {
     if (payload.status) updateData.status = statusMap[payload.status] || (typeof payload.status === 'string' ? payload.status.toUpperCase() : payload.status);
     if (payload.condition) updateData.condition = conditionMap[payload.condition] || (typeof payload.condition === 'string' ? payload.condition.toUpperCase() : payload.condition);
 
-    const updated = await prisma.asset.update({
-      where: { id: targetAsset.id },
-      data: updateData,
-      include: { branch: true }
-    });
+    const photoVal = payload.photoUrl || payload.image || payload.photo;
+
+    let updated;
+    try {
+      updated = await prisma.asset.update({
+        where: { id: targetAsset.id },
+        data: { ...updateData, ...(photoVal !== undefined && { photoUrl: photoVal }) },
+        include: { branch: true }
+      });
+    } catch (e) {
+      updated = await prisma.asset.update({
+        where: { id: targetAsset.id },
+        data: updateData,
+        include: { branch: true }
+      });
+      if (photoVal !== undefined) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE \`asset\` SET \`photoUrl\` = ? WHERE \`id\` = ?;`,
+          photoVal,
+          targetAsset.id
+        ).catch(() => {});
+        updated.photoUrl = photoVal;
+      }
+    }
 
     return sendSuccess(res, updated);
 
@@ -1159,7 +1375,8 @@ exports.getAssetById = async (req, res, next) => {
       nextServiceDays: '',
       description: targetAsset.description || 'No description provided.',
       notes: targetAsset.notes || 'No special operational notes recorded.',
-      image: targetAsset.photoUrl || 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=600&auto=format&fit=crop&q=60',
+      photoUrl: targetAsset.photoUrl || null,
+      image: targetAsset.photoUrl || null,
       assignments: targetAsset.assignments.map(a => ({
         id: a.id.slice(0, 8),
         assignedTo: a.assignedTo,
@@ -2926,6 +3143,36 @@ exports.getCustomers = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+exports.deleteCustomer = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const companyId = await resolveCompanyId(req);
+    const targetCustomer = await prisma.customer.findFirst({
+      where: {
+        OR: [{ id }, { name: id }],
+        ...(companyId && { companyId })
+      }
+    });
+
+    if (targetCustomer) {
+      await prisma.customerInvoice.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
+      await prisma.load.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
+      await prisma.customer.delete({ where: { id: targetCustomer.id } }).catch(() => {});
+    } else {
+      await prisma.customer.delete({ where: { id } }).catch(() => {});
+    }
+
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(204).send();
+  }
+};
+
+exports.deleteDriver = async (req, res, next) => {
+  const DriverController = require('./DriverController');
+  return DriverController.delete(req, res, next);
+};
+
 // ----------------------------------------------------------------------
 // 21. SUBSCRIPTION & BILLING MENU
 // ----------------------------------------------------------------------
@@ -3297,7 +3544,25 @@ exports.getAvailableSubscriptionPlans = async (req, res, next) => {
 exports.updateWarehouse = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const data = await prisma.warehouse.update({ where: { id }, data: req.body });
+    const payload = { ...req.body };
+    const photoVal = payload.photoUrl || payload.image || payload.photo;
+    let data;
+    try {
+      data = await prisma.warehouse.update({ where: { id }, data: payload });
+    } catch (e) {
+      delete payload.photoUrl;
+      delete payload.image;
+      delete payload.photo;
+      data = await prisma.warehouse.update({ where: { id }, data: payload });
+      if (photoVal !== undefined) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE \`warehouse\` SET \`photoUrl\` = ? WHERE \`id\` = ?;`,
+          photoVal,
+          id
+        ).catch(() => {});
+        data.photoUrl = photoVal;
+      }
+    }
     return sendSuccess(res, data);
   } catch (error) { next(error); }
 };
@@ -3313,7 +3578,7 @@ exports.deleteWarehouse = async (req, res, next) => {
 exports.getWarehouseLocations = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const data = await prisma.warehouseLocation.findMany({ where: { warehouseId: id } });
+    const data = await prisma.loadLane.findMany({ where: { warehouseId: id } });
     return sendSuccess(res, data);
   } catch (error) { next(error); }
 };
@@ -3567,6 +3832,8 @@ exports.getWarehouses = async (req, res, next) => {
       name: w.name,
       type: w.type || 'General',
       status: w.status || 'Active',
+      photoUrl: w.photoUrl || null,
+      image: w.photoUrl || null,
       branch: w.branch ? w.branch.name : 'Sydney Main',
       addr: w.address || `${w.city || 'Sydney'}, ${w.state || 'NSW'}`,
       city: w.city || '',
@@ -3643,6 +3910,8 @@ exports.createWarehouse = async (req, res, next) => {
       ? String(payload.code).trim()
       : `WH-${Math.floor(100 + Math.random() * 900)}`;
 
+    const photoVal = payload.photoUrl || payload.image || payload.photo || null;
+
     const warehouseData = {
       code: warehouseCode,
       name: payload.name,
@@ -3658,12 +3927,26 @@ exports.createWarehouse = async (req, res, next) => {
       branchId: branch.id
     };
 
-    const newWh = await prisma.warehouse.create({
-      data: warehouseData,
-      include: {
-        branch: true
+    let newWh;
+    try {
+      newWh = await prisma.warehouse.create({
+        data: { ...warehouseData, photoUrl: photoVal },
+        include: { branch: true }
+      });
+    } catch (e) {
+      newWh = await prisma.warehouse.create({
+        data: warehouseData,
+        include: { branch: true }
+      });
+      if (photoVal) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE \`warehouse\` SET \`photoUrl\` = ? WHERE \`id\` = ?;`,
+          photoVal,
+          newWh.id
+        ).catch(() => {});
+        newWh.photoUrl = photoVal;
       }
-    });
+    }
 
     const mapped = {
       id: newWh.id,
@@ -3698,12 +3981,32 @@ exports.updateWarehouse = async (req, res, next) => {
     if (payload.totalAreaSqm) updateData.totalAreaSqm = parseInt(payload.totalAreaSqm);
     if (payload.palletCapacity) updateData.palletCapacity = parseInt(payload.palletCapacity);
     if (payload.loadingDocks) updateData.loadingDocks = parseInt(payload.loadingDocks);
+    if (payload.address || payload.addr) updateData.address = payload.address || payload.addr;
 
-    const updated = await prisma.warehouse.update({
-      where: { id },
-      data: updateData,
-      include: { branch: true }
-    });
+    const photoVal = payload.photoUrl || payload.image || payload.photo;
+
+    let updated;
+    try {
+      updated = await prisma.warehouse.update({
+        where: { id },
+        data: { ...updateData, ...(photoVal !== undefined && { photoUrl: photoVal }) },
+        include: { branch: true }
+      });
+    } catch (e) {
+      updated = await prisma.warehouse.update({
+        where: { id },
+        data: updateData,
+        include: { branch: true }
+      });
+      if (photoVal !== undefined) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE \`warehouse\` SET \`photoUrl\` = ? WHERE \`id\` = ?;`,
+          photoVal,
+          id
+        ).catch(() => {});
+        updated.photoUrl = photoVal;
+      }
+    }
 
     return sendSuccess(res, updated);
   } catch (error) { next(error); }
@@ -3720,24 +4023,81 @@ exports.deleteWarehouse = async (req, res, next) => {
 exports.getWarehouseLocations = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const loadLanes = await prisma.loadLane.findMany({ where: { warehouseId: id } });
-    return sendSuccess(res, loadLanes);
+    const loadLanes = await prisma.loadLane.findMany({
+      where: { warehouseId: id },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const locations = loadLanes.map(l => ({
+      id: l.id,
+      code: l.name.startsWith('LOC-') ? l.name : `LOC-${l.name.slice(0, 8).toUpperCase()}`,
+      name: l.name,
+      area: 'Standard Storage',
+      type: 'Floor',
+      bins: 6,
+      cap: 100,
+      used: 0,
+      util: '0.0%',
+      status: l.status || 'ACTIVE'
+    }));
+
+    const totalLocs = locations.length;
+    const totalBins = totalLocs * 6;
+    const totalCap = totalLocs * 100;
+    const totalUsed = locations.reduce((sum, item) => sum + (parseInt(item.used) || 0), 0);
+    const availCap = Math.max(0, totalCap - totalUsed);
+    const utilPct = totalCap > 0 ? ((totalUsed / totalCap) * 100).toFixed(1) : '0.0';
+
+    const stats = {
+      totalLocations: totalLocs,
+      totalBins: totalBins,
+      binCapacity: `${totalCap} m³`,
+      usedCapacity: `${totalUsed} m³`,
+      availableCapacity: `${availCap} m³`,
+      utilPercent: utilPct,
+      overfullBins: 0
+    };
+
+    return sendSuccess(res, { locations, stats });
   } catch (error) { next(error); }
 };
 
 exports.createWarehouseLocation = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const data = await prisma.warehouseLocation.create({ data: { ...req.body, warehouseId: id } });
-    return sendSuccess(res, data, HTTP_STATUS.CREATED);
+    const locationName = req.body.name || req.body.code || req.body.locationName || req.body.zone || `Location-${Math.floor(100 + Math.random() * 900)}`;
+    const locationStatus = req.body.status || 'ACTIVE';
+
+    const data = await prisma.loadLane.create({
+      data: {
+        warehouseId: id,
+        name: String(locationName).trim(),
+        status: String(locationStatus).toUpperCase()
+      }
+    });
+
+    const mapped = {
+      id: data.id,
+      code: data.name.startsWith('LOC-') ? data.name : `LOC-${data.name.slice(0, 8).toUpperCase()}`,
+      name: data.name,
+      area: req.body.area || 'Standard Storage',
+      type: req.body.type || 'Floor',
+      bins: req.body.bins ? parseInt(req.body.bins) : 6,
+      cap: req.body.capacity ? parseInt(req.body.capacity) : 100,
+      used: 0,
+      util: '0.0%',
+      status: data.status || 'ACTIVE'
+    };
+
+    return sendSuccess(res, mapped, HTTP_STATUS.CREATED);
   } catch (error) { next(error); }
 };
 
 exports.deleteWarehouseLocation = async (req, res, next) => {
   try {
     const { locationId } = req.params;
-    await prisma.warehouseLocation.delete({ where: { id: locationId } });
-    return sendSuccess(res, { id: locationId, message: 'Location deleted' });
+    await prisma.loadLane.deleteMany({ where: { id: locationId } });
+    return sendSuccess(res, { id: locationId, message: 'Location deleted successfully' });
   } catch (error) { next(error); }
 };
 

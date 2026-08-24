@@ -1252,8 +1252,38 @@ exports.getPnl = async (req, res, next) => {
     const currGrossProfit = currRev - currCogs;
     const currNetProfit = currGrossProfit - currOpex;
 
+    // Load-level profitability breakdown for recent delivered loads
+    const recentDeliveredLoads = await prisma.load.findMany({
+      where: { ...(companyId && { companyId }), status: { in: ['DELIVERED', 'COMPLETED'] } },
+      include: { customer: true, driver: true, invoices: true, expenses: true },
+      orderBy: { updatedAt: 'desc' },
+      take: 10
+    });
+
+    const recentLoadMargins = recentDeliveredLoads.map(ld => {
+      const invAmount = ld.invoices?.reduce((sum, inv) => sum + (inv.amount || 0), 0) || 0;
+      const revExGst = Math.round((invAmount / 1.1) * 100) / 100;
+      const expTotal = ld.expenses?.reduce((sum, exp) => sum + (exp.amount || 0), 0) || 0;
+      const estDriverCost = ld.driver?.payRate ? parseFloat(ld.driver.payRate) : 250.00;
+      const loadProfit = revExGst - expTotal - estDriverCost;
+      const marginPct = revExGst > 0 ? Math.round((loadProfit / revExGst) * 100) : 0;
+
+      return {
+        loadId: ld.id,
+        loadRef: ld.loadRef || `LD-${ld.id.slice(0, 6)}`,
+        customer: ld.customer?.name || 'Customer',
+        driver: ld.driver ? `${ld.driver.firstName || ''} ${ld.driver.lastName || ''}`.trim() : 'Driver',
+        revenue: revExGst,
+        expenses: expTotal,
+        driverCost: estDriverCost,
+        netProfit: loadProfit,
+        marginPct
+      };
+    });
+
     return sendSuccess(res, {
       pnl: currentPeriodData,
+      recentLoadMargins,
       summary: {
         totalRevenue: currRev,
         cogs: currCogs,

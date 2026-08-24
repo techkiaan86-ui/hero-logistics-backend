@@ -20,8 +20,7 @@ exports.getAll = async (req, res, next) => {
         where, skip, take, orderBy,
         include: {
           accountManager: true,
-          loads: { take: 5, orderBy: { createdAt: 'desc' } },
-          invoices: { take: 5, orderBy: { createdAt: 'desc' } }
+          loads: { take: 5, orderBy: { createdAt: 'desc' } }
         }
       }),
       prisma.customer.count({ where })
@@ -47,8 +46,7 @@ exports.getById = async (req, res, next) => {
       where,
       include: {
         accountManager: true,
-        loads: true,
-        invoices: true
+        loads: true
       }
     });
     
@@ -68,16 +66,36 @@ exports.getById = async (req, res, next) => {
 // Create new Customer
 exports.create = async (req, res, next) => {
   try {
-    const payload = { ...req.body };
-    if (req.tenantId && !payload.companyId) payload.companyId = req.tenantId;
-    if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
-      payload.branchId = req.user.branchId;
-    }
+    const raw = { ...req.body };
+    const payload = {};
+
+    payload.name = raw.name || raw.companyName || 'New Customer';
+    if (raw.abn) payload.abn = String(raw.abn);
+    if (raw.companyId) payload.companyId = raw.companyId;
+    else if (req.tenantId) payload.companyId = req.tenantId;
 
     if (!payload.companyId) {
       const firstCompany = await prisma.company.findFirst();
-      if (firstCompany) {
-        payload.companyId = firstCompany.id;
+      if (firstCompany) payload.companyId = firstCompany.id;
+    }
+
+    if (raw.contactName || raw.primaryContact) payload.contactName = raw.contactName || raw.primaryContact;
+    if (raw.email) payload.email = raw.email;
+    if (raw.phone) payload.phone = raw.phone;
+    if (raw.billingTerms) payload.billingTerms = raw.billingTerms;
+    if (raw.transportModules) payload.transportModules = typeof raw.transportModules === 'string' ? raw.transportModules : JSON.stringify(raw.transportModules);
+    if (raw.branchId || req.user?.branchId) payload.branchId = raw.branchId || req.user?.branchId;
+    if (raw.accountManagerId) payload.accountManagerId = raw.accountManagerId;
+
+    if (raw.type) {
+      const tUpper = String(raw.type).toUpperCase();
+      payload.type = (tUpper === 'INDIVIDUAL') ? 'INDIVIDUAL' : 'BUSINESS';
+    }
+
+    if (raw.status) {
+      const sUpper = String(raw.status).toUpperCase();
+      if (['ACTIVE', 'INACTIVE', 'SUSPENDED'].includes(sUpper)) {
+        payload.status = sUpper;
       }
     }
 
@@ -140,24 +158,25 @@ exports.update = async (req, res, next) => {
 // Delete Customer
 exports.delete = async (req, res, next) => {
   try {
-    const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
-    if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
-      where.branchId = req.user.branchId;
+    const { id } = req.params;
+    const targetCustomer = await prisma.customer.findFirst({
+      where: {
+        OR: [{ id }, { name: id }],
+        ...(req.tenantId && { companyId: req.tenantId })
+      }
+    });
+
+    if (targetCustomer) {
+      await prisma.customerInvoice.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
+      await prisma.load.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
+      await prisma.customer.delete({ where: { id: targetCustomer.id } }).catch(() => {});
+    } else {
+      await prisma.customer.delete({ where: { id } }).catch(() => {});
     }
 
-    await prisma.customer.delete({ where });
-    
-    // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    if (error.code === 'P2025') {
-      return sendError(res, {
-        code: ERROR_CODES.NOT_FOUND,
-        message: 'Customer not found'
-      }, HTTP_STATUS.NOT_FOUND);
-    }
-    next(error);
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };
 

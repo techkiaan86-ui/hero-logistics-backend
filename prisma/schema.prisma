@@ -2099,6 +2099,7 @@ model Warehouse {
   name   String
   type   String @default("General")
   status String @default("Active")
+  photoUrl String? @db.Text
 
   // Sizing & Capabilities
   totalAreaSqm   Int?
@@ -2211,6 +2212,7 @@ model Asset {
   model        String?
   year         Int?
   serialNumber String?
+  photoUrl     String? @db.Text
   iotDeviceId  String?
 
   status    AssetStatus    @default(ACTIVE)

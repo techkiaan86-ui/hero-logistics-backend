@@ -20,9 +20,10 @@ try {
     user,
     password,
     database,
-    connectionLimit: 20,
+    connectionLimit: 5,
     allowPublicKeyRetrieval: true,
-    connectTimeout: 10000
+    connectTimeout: 5000,
+    idleTimeout: 3000
   });
 
   prisma = new PrismaClient({ adapter });

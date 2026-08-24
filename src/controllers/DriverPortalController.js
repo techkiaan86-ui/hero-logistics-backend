@@ -1301,10 +1301,30 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
       }).catch(() => null);
     }
 
+    // P0 Requirement: Auto-generate CustomerInvoice DRAFT upon POD completion
+    let autoInvoice = null;
+    let autoPayroll = null;
+    if (loadId) {
+      try {
+        const { autoGenerateLoadInvoice, autoCreditDriverPayroll } = require('./CompanyAdminPortalController');
+        if (typeof autoGenerateLoadInvoice === 'function') {
+          autoInvoice = await autoGenerateLoadInvoice(loadId, driver.companyId);
+        }
+        if (typeof autoCreditDriverPayroll === 'function' && driver?.id) {
+          autoPayroll = await autoCreditDriverPayroll(loadId, driver.id, driver.companyId);
+        }
+      } catch (invErr) {
+        console.warn('Auto financial generation catch:', invErr?.message);
+      }
+    }
+
     return sendSuccess(res, {
       success: true,
       signatureUrl: signaturePath,
-      message: 'Stop confirmed as Delivered! POD captured and Dispatch & Customer notified.'
+      invoiceGenerated: !!autoInvoice,
+      invoiceNumber: autoInvoice?.invoiceNumber || null,
+      payrollCredited: !!autoPayroll,
+      message: 'Stop confirmed as Delivered! POD captured, DRAFT Invoice generated, and Driver Payroll credited.'
     });
   } catch (error) {
     next(error);

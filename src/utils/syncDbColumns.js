@@ -31,6 +31,7 @@ async function syncMissingVehicleColumns() {
       `ALTER TABLE customer_invoice ADD COLUMN items JSON`,
       `ALTER TABLE customer_invoice ADD COLUMN type VARCHAR(255) DEFAULT 'Freight'`,
       `ALTER TABLE customer_invoice ADD COLUMN dueDate DATETIME`,
+      `ALTER TABLE customer_invoice ADD COLUMN appliedTaxRate DOUBLE DEFAULT 0.1`,
       `ALTER TABLE customer ADD COLUMN branchId VARCHAR(255)`,
       `ALTER TABLE load_item ADD COLUMN damageReportReq TINYINT(1) DEFAULT 0`,
       `ALTER TABLE load_item ADD COLUMN receivedDate DATETIME`,

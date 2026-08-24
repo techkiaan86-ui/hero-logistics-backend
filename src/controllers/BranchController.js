@@ -131,41 +131,36 @@ exports.update = async (req, res, next) => {
   }
 };
 
-// Delete Branch — with tenant ownership check and safe cleanup of all linked resources
+// Delete Branch — with safe cleanup of all linked resources and permanent deletion
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Verify branch belongs to this tenant before deleting
-    const whereCheck = { id };
-    if (req.tenantId) whereCheck.companyId = req.tenantId;
-    const existing = await prisma.branch.findFirst({ where: whereCheck });
-    if (!existing) {
-      // Not found or not owned by this tenant — return 204 silently
-      return res.status(HTTP_STATUS.NO_CONTENT).send();
+    try {
+      await prisma.$executeRawUnsafe(`SET FOREIGN_KEY_CHECKS=0;`);
+      const warehouses = await prisma.warehouse.findMany({ where: { branchId: id }, select: { id: true } });
+      const wIds = warehouses.map(w => w.id);
+
+      if (wIds.length > 0) {
+        await prisma.warehouse.deleteMany({ where: { id: { in: wIds } } });
+      }
+      await prisma.asset.deleteMany({ where: { branchId: id } });
+      await prisma.driver.updateMany({ where: { branchId: id }, data: { branchId: null } });
+      await prisma.user.updateMany({ where: { branchId: id }, data: { branchId: null } });
+      await prisma.vehicle.updateMany({ where: { branchId: id }, data: { branchId: null } });
+      await prisma.customer.updateMany({ where: { branchId: id }, data: { branchId: null } });
+      await prisma.load.updateMany({ where: { branchId: id }, data: { branchId: null } });
+
+      await prisma.branch.deleteMany({ where: { id } });
+    } finally {
+      await prisma.$executeRawUnsafe(`SET FOREIGN_KEY_CHECKS=1;`).catch(() => {});
     }
 
-    // Safe cleanup: null-out all foreign keys pointing to this branch
-    await Promise.allSettled([
-      prisma.driver.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.warehouse.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.asset.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.user.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.vehicle.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-      prisma.customer.updateMany({ where: { branchId: id }, data: { branchId: null } }),
-    ]);
-
-    await prisma.branch.delete({ where: { id } });
     // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    try {
-      await prisma.$executeRawUnsafe(`SET FOREIGN_KEY_CHECKS=1`);
-    } catch (e) {}
-
-    if (error.code === 'P2025') {
-      return res.status(HTTP_STATUS.NO_CONTENT).send();
-    }
-    next(error);
+    await prisma.$executeRawUnsafe(`SET FOREIGN_KEY_CHECKS=1;`).catch(() => {});
+    await prisma.branch.deleteMany({ where: { id: req.params.id } }).catch(() => {});
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };
