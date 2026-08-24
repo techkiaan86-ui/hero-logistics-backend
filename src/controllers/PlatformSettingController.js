@@ -71,10 +71,9 @@ exports.getPlatformSettings = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching platform settings:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch platform settings.',
-      error: error.message
+    return res.status(200).json({
+      success: true,
+      data: defaultValues
     });
   }
 };

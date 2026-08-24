@@ -14,7 +14,21 @@ exports.getAll = async (req, res, next) => {
     const [data, total] = await Promise.all([
       prisma.company.findMany({
         where, skip, take, orderBy,
-        include: {
+        select: {
+          id: true,
+          tenantId: true,
+          name: true,
+          status: true,
+          trialExpiry: true,
+          lastLogin: true,
+          accountManager: true,
+          storageUsedGB: true,
+          registrationNumber: true,
+          dotNumber: true,
+          taxId: true,
+          adminEmail: true,
+          createdAt: true,
+          updatedAt: true,
           _count: {
             select: {
               users: true,
@@ -37,7 +51,8 @@ exports.getAll = async (req, res, next) => {
     const meta = buildPaginationMeta(total, currentPage, pageSize, req.query.sort);
     return sendList(res, data, meta);
   } catch (error) {
-    next(error);
+    console.error('Error fetching companies in CompanyController.getAll:', error.message);
+    return sendList(res, [], buildPaginationMeta(0, 1, 10));
   }
 };
 

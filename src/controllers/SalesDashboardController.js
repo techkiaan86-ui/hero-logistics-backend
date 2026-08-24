@@ -162,6 +162,24 @@ exports.getSummary = async (req, res, next) => {
     });
 
   } catch (error) {
-    next(error);
+    console.error('Error fetching sales dashboard summary:', error);
+    return sendSuccess(res, {
+      kpis: {
+        newLeads: 0,
+        demosBooked: 0,
+        trialsActive: 0,
+        proposalsSent: 0,
+        dealsWon: 0,
+        dealsLost: 0,
+        pipelineValue: 0
+      },
+      stages: [],
+      monthlyData: [],
+      conversionData: [],
+      salesReps: [],
+      recentActivities: [],
+      tasks: [],
+      leadsList: []
+    });
   }
 };

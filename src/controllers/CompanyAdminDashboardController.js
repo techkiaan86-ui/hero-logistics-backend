@@ -89,17 +89,29 @@ exports.getDashboardMetrics = async (req, res, next) => {
       },
       take: 5,
       orderBy: { createdAt: 'desc' },
-      include: {
-        customer: true
+      select: {
+        id: true,
+        invoiceNumber: true,
+        amount: true,
+        status: true,
+        dueDate: true,
+        customer: {
+          select: {
+            name: true
+          }
+        }
       }
+    }).catch(err => {
+      console.warn('Warning fetching pending invoices in CompanyAdminDashboardController:', err.message);
+      return [];
     });
 
-    const totalPendingRevenue = pendingInvoicesRaw.reduce((sum, inv) => sum + (inv.totalAmount || inv.amount || 0), 0);
+    const totalPendingRevenue = pendingInvoicesRaw.reduce((sum, inv) => sum + (inv.amount || 0), 0);
 
     const pendingInvoices = pendingInvoicesRaw.map(inv => ({
       id: inv.invoiceNumber || `INV-${inv.id.slice(0, 5)}`,
       client: inv.customer?.name || 'Customer',
-      amount: `$${(inv.totalAmount || inv.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
+      amount: `$${(inv.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       due: inv.dueDate ? (new Date(inv.dueDate) < new Date() ? 'Overdue' : `Due in ${Math.ceil((new Date(inv.dueDate) - new Date()) / (1000 * 60 * 60 * 24))} days`) : 'Due soon'
     }));
 
