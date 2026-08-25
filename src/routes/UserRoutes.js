@@ -6,6 +6,9 @@ const { resolveTenant } = require('../middlewares/tenantResolver');
 
 router.use(verifyToken, resolveTenant);
 
+router.get('/profile', UserController.getProfile);
+router.put('/profile', UserController.updateProfile);
+
 router.route('/')
   .get(UserController.getAll)
   .post(UserController.create);

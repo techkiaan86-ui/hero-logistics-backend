@@ -49,14 +49,87 @@ exports.getById = async (req, res, next) => {
 // Create new Message
 exports.create = async (req, res, next) => {
   try {
-    const payload = { ...req.body };
-    // if (req.tenantId) payload.tenantId = req.tenantId;
+    const { 
+      recipient, 
+      recipientName, 
+      to, 
+      subject, 
+      content, 
+      message, 
+      priority, 
+      conversationId, 
+      senderId,
+      loadId,
+      attachmentUrl 
+    } = req.body;
+
+    const rawContent = content || message || (subject ? `[${subject}]` : 'No content');
+    const recipientTitle = recipient || recipientName || to || 'General Communication';
+
+    // 1. Resolve effective companyId
+    let effectiveCompanyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
+    if (!effectiveCompanyId) {
+      const firstCompany = await prisma.company.findFirst({ select: { id: true } });
+      if (firstCompany) {
+        effectiveCompanyId = firstCompany.id;
+      }
+    }
+
+    // 2. Resolve effective conversationId
+    let effectiveConvId = conversationId;
+    if (!effectiveConvId) {
+      let existingConv = await prisma.conversation.findFirst({
+        where: { title: recipientTitle }
+      });
+      if (!existingConv) {
+        existingConv = await prisma.conversation.create({
+          data: {
+            title: recipientTitle,
+            type: 'DIRECT',
+            companyId: effectiveCompanyId
+          }
+        });
+      }
+      effectiveConvId = existingConv.id;
+    }
+
+    // 2. Resolve effective senderId (User relation)
+    let effectiveSenderId = senderId || req.user?.id;
+    if (!effectiveSenderId) {
+      const firstUser = await prisma.user.findFirst({ select: { id: true } });
+      if (firstUser) {
+        effectiveSenderId = firstUser.id;
+      }
+    }
+
+    if (!effectiveSenderId) {
+      const defaultUser = await prisma.user.create({
+        data: {
+          email: `dispatcher_${Date.now()}@herologistics.com.au`,
+          passwordHash: '$2b$10$w82J...placeholder',
+          firstName: 'System',
+          lastName: 'Dispatcher',
+          role: 'DISPATCHER'
+        }
+      });
+      effectiveSenderId = defaultUser.id;
+    }
+
+    const messageData = {
+      content: subject && !rawContent.startsWith('[') ? `[${subject.toUpperCase()}] ${rawContent}` : rawContent,
+      conversationId: effectiveConvId,
+      senderId: effectiveSenderId,
+      ...(loadId && { loadId }),
+      ...(attachmentUrl && { attachmentUrl })
+    };
 
     const data = await prisma.message.create({
-      data: payload
+      data: messageData
     });
+
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) {
+    console.error('Error creating message:', error);
     next(error);
   }
 };

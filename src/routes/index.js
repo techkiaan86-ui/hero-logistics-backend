@@ -227,12 +227,9 @@ router.use('/accounts-portal', AccountsPortalRoutes);
 router.use('/live-tracking', CompanyAdminPortalRoutes);
 router.use('/pricing', CompanyAdminPortalRoutes);
 router.use('/payroll', CompanyAdminPortalRoutes);
-router.use('/finance', CompanyAdminPortalRoutes);
-router.use('/knowledge-base', CompanyAdminPortalRoutes);
-router.use('/roles-permissions', CompanyAdminPortalRoutes);
-router.use('/company-settings', CompanyAdminPortalRoutes);
-router.use('/safety-checklists', CompanyAdminPortalRoutes);
-router.use('/delivery-issues', CompanyAdminPortalRoutes);
+const SalesSettingsRoutes = require('./SalesSettingsRoutes');
+router.use('/sales-settings', SalesSettingsRoutes);
+router.use('/sales/settings', SalesSettingsRoutes);
 
 module.exports = router;
 

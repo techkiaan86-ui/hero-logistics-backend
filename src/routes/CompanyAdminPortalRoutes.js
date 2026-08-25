@@ -7,6 +7,10 @@ const { resolveTenant } = require('../middlewares/tenantResolver');
 // Apply auth & tenant resolver middleware across all Company Admin routes
 router.use(verifyToken, resolveTenant);
 
+// Profile
+router.get('/profile', ctrl.getProfile);
+router.put('/profile', ctrl.updateProfile);
+
 // 1. Command Centre / Dashboard
 router.get('/command-centre', ctrl.getCommandCentre);
 router.get('/dashboard', ctrl.getCommandCentre);

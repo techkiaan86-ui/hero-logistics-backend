@@ -121,8 +121,44 @@ exports.createLoad = async (req, res, next) => {
     const { stops, items, ...rawPayload } = req.body;
     const payload = { ...rawPayload };
     payload.companyId = companyId;
-    if (!payload.loadRef) payload.loadRef = `PO-${Date.now().toString().slice(-6)}`;
+
+    // Strip IDs to allow Prisma auto-generation
+    delete payload.id;
+    delete payload.rawId;
+
+    // Guarantee unique loadRef
+    if (payload.loadRef) {
+      const existingRef = await prisma.load.findFirst({
+        where: { loadRef: String(payload.loadRef) }
+      });
+      if (existingRef) {
+        payload.loadRef = `${payload.loadRef}-${Math.floor(1000 + Math.random() * 9000)}`;
+      }
+    } else {
+      payload.loadRef = `PO-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    // Guarantee unique draftId
+    if (payload.draftId) {
+      const existingDraft = await prisma.load.findFirst({
+        where: { draftId: String(payload.draftId) }
+      });
+      if (existingDraft) {
+        payload.draftId = `DRAFT-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+      }
+    } else {
+      delete payload.draftId;
+    }
+
     if (!payload.type) payload.type = 'General Freight';
+    if (payload.status) payload.status = sanitizeLoadStatus(payload.status);
+    if (payload.priority) {
+      const sanitized = sanitizeLoadPriority(payload.priority);
+      if (sanitized) payload.priority = sanitized;
+      else delete payload.priority;
+    }
+
+    // Resolve Customer
     if (payload.customer && !payload.customerId && typeof payload.customer === 'string') {
       const custName = payload.customer.trim();
       let foundCust = await prisma.customer.findFirst({
@@ -144,10 +180,58 @@ exports.createLoad = async (req, res, next) => {
     }
     delete payload.customer;
 
+    // Resolve Driver
+    if (payload.driver && !payload.driverId) {
+      if (typeof payload.driver === 'string') {
+        const foundDriver = await prisma.driver.findFirst({
+          where: {
+            OR: [
+              { id: payload.driver },
+              { user: { name: { contains: payload.driver } } }
+            ]
+          }
+        });
+        if (foundDriver) payload.driverId = foundDriver.id;
+      } else if (payload.driver?.id) {
+        payload.driverId = payload.driver.id;
+      }
+    }
+    delete payload.driver;
+
+    // Resolve Vehicle / Truck
+    if (payload.vehicleId && !payload.truckId) {
+      const foundTruck = await prisma.vehicle.findFirst({
+        where: { OR: [{ id: payload.vehicleId }, { rego: payload.vehicleId }] }
+      });
+      if (foundTruck) payload.truckId = foundTruck.id;
+    }
+    delete payload.vehicleId;
+
+    // Clean non-schema parameters
+    delete payload.customerName;
+    delete payload.driverName;
+    delete payload.truckRego;
+    delete payload.trailerRego;
+    delete payload.pickupLocation;
+    delete payload.deliveryLocation;
+    delete payload.pickupAddress;
+    delete payload.deliveryAddress;
+    delete payload.pickupDate;
+    delete payload.deliveryDate;
+    delete payload.scheduledDate;
+    delete payload.totalWeight;
+    delete payload.weight;
+    delete payload.rate;
+    delete payload.rateUSD;
+    delete payload.price;
+    delete payload.revenue;
+    delete payload.distance;
+    delete payload.pickupStopId;
+
     if (Array.isArray(stops) && stops.length > 0) {
       payload.stops = {
         create: stops.map((s, idx) => ({
-          type: s.type || 'PICKUP',
+          type: s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF'),
           sequenceIndex: s.sequenceIndex ?? idx,
           address: s.address || 'Location Stop',
           contactName: s.contactName || null,
@@ -160,13 +244,16 @@ exports.createLoad = async (req, res, next) => {
     if (Array.isArray(items) && items.length > 0) {
       payload.items = {
         create: items.map(item => ({
-          stockRef: item.stockRef || item.rego || 'ITEM-REF',
+          stockRef: item.stockRef || item.rego || item.description || 'ITEM-REF',
+          description: item.description || item.type || 'Freight Item',
+          category: item.type || item.category || 'General Freight',
           make: item.make || null,
           model: item.model || null,
           rego: item.rego || null,
           vin: item.vin || null,
           quantity: item.quantity || 1,
-          notes: typeof item.notes === 'string' ? item.notes : JSON.stringify(item)
+          weightKg: item.weightValue || (item.weight ? parseInt(String(item.weight).replace(/[^0-9]/g, '')) || 0 : 0),
+          notes: typeof item.notes === 'string' ? item.notes : (item.details || JSON.stringify(item))
         }))
       };
     }
@@ -4211,5 +4298,68 @@ exports.exportReports = async (req, res, next) => {
 exports.toggleFavouriteReport = async (req, res, next) => {
   try {
     return sendSuccess(res, { id: req.params.id, favourite: true });
+  } catch (error) { next(error); }
+};
+
+// Profile APIs
+exports.getProfile = async (req, res, next) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Unauthorized' }, HTTP_STATUS.UNAUTHORIZED);
+
+    const userObj = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        company: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        customRole: { select: { id: true, name: true, permissions: true } }
+      }
+    });
+
+    if (!userObj) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Profile not found' }, HTTP_STATUS.NOT_FOUND);
+    delete userObj.password;
+    return sendSuccess(res, userObj);
+  } catch (error) { next(error); }
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Unauthorized' }, HTTP_STATUS.UNAUTHORIZED);
+
+    const { name, phone, dob, address, emergencyContact, email, currentPassword, newPassword } = req.body;
+    const currentUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (!currentUser) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'User not found' }, HTTP_STATUS.NOT_FOUND);
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name.trim();
+    if (phone !== undefined) updateData.phone = phone ? phone.trim() : null;
+    if (dob !== undefined) updateData.dob = dob ? dob.trim() : null;
+    if (address !== undefined) updateData.address = address ? address.trim() : null;
+    if (emergencyContact !== undefined) updateData.emergencyContact = emergencyContact ? emergencyContact.trim() : null;
+    if (email && email.trim().toLowerCase() !== currentUser.email) updateData.email = email.trim().toLowerCase();
+
+    if (newPassword && newPassword.trim().length > 0) {
+      if (currentPassword) {
+        const bcrypt = require('bcryptjs');
+        const isMatch = await bcrypt.compare(currentPassword, currentUser.password);
+        if (!isMatch) return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Current password is incorrect' }, HTTP_STATUS.BAD_REQUEST);
+      }
+      const bcrypt = require('bcryptjs');
+      updateData.password = await bcrypt.hash(newPassword.trim(), 10);
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      include: {
+        company: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        customRole: { select: { id: true, name: true, permissions: true } }
+      }
+    });
+
+    delete updatedUser.password;
+    return sendSuccess(res, updatedUser);
   } catch (error) { next(error); }
 };

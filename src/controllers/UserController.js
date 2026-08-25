@@ -220,6 +220,10 @@ exports.update = async (req, res, next) => {
       }
     }
 
+    if (dob !== undefined) updateData.dob = dob ? dob.trim() : null;
+    if (address !== undefined) updateData.address = address ? address.trim() : null;
+    if (emergencyContact !== undefined) updateData.emergencyContact = emergencyContact ? emergencyContact.trim() : null;
+
     if (password && password.trim().length > 0) {
       updateData.password = await bcrypt.hash(password, 10);
     }
@@ -252,6 +256,87 @@ exports.update = async (req, res, next) => {
     next(error);
   }
 };
+
+// Get Profile of logged-in user
+exports.getProfile = async (req, res, next) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Unauthorized' }, HTTP_STATUS.UNAUTHORIZED);
+    }
+    const data = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        company: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        customRole: { select: { id: true, name: true, permissions: true } }
+      }
+    });
+    if (!data) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Profile not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+    delete data.password;
+    return sendSuccess(res, data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Update Profile of logged-in user
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Unauthorized' }, HTTP_STATUS.UNAUTHORIZED);
+    }
+    const { name, phone, dob, address, emergencyContact, email, currentPassword, newPassword } = req.body;
+
+    const currentUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (!currentUser) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'User profile not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const updateData = {};
+    if (name !== undefined) updateData.name = name.trim();
+    if (phone !== undefined) updateData.phone = phone ? phone.trim() : null;
+    if (dob !== undefined) updateData.dob = dob ? dob.trim() : null;
+    if (address !== undefined) updateData.address = address ? address.trim() : null;
+    if (emergencyContact !== undefined) updateData.emergencyContact = emergencyContact ? emergencyContact.trim() : null;
+    if (email && email.trim().toLowerCase() !== currentUser.email) {
+      updateData.email = email.trim().toLowerCase();
+    }
+
+    // Password change handling
+    if (newPassword && newPassword.trim().length > 0) {
+      if (currentPassword) {
+        const isMatch = await bcrypt.compare(currentPassword, currentUser.password);
+        if (!isMatch) {
+          return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Current password is incorrect' }, HTTP_STATUS.BAD_REQUEST);
+        }
+      }
+      updateData.password = await bcrypt.hash(newPassword.trim(), 10);
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      include: {
+        company: { select: { id: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        customRole: { select: { id: true, name: true, permissions: true } }
+      }
+    });
+
+    delete updatedUser.password;
+    return sendSuccess(res, updatedUser);
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Email address is already in use.' }, HTTP_STATUS.BAD_REQUEST);
+    }
+    next(error);
+  }
+};
+
 
 // Delete User
 exports.delete = async (req, res, next) => {

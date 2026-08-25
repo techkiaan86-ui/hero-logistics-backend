@@ -51,15 +51,25 @@ router.get('/movement-history', ctrl.getMovements);
 router.get('/map', ctrl.getYardMap);
 router.get('/yard-map', ctrl.getYardMap);
 
-// 9. Reports & Analytics (Managers Only)
-router.get('/reports/overview', authorizeRoles(['WAREHOUSE', 'COMPANY_ADMIN', 'SUPER_ADMIN']), ctrl.getReportsOverview);
-router.get('/reports', authorizeRoles(['WAREHOUSE', 'COMPANY_ADMIN', 'SUPER_ADMIN']), ctrl.getReportsOverview);
+// 9. Reports & Analytics
+router.get('/reports/overview', authorizeRoles(['WAREHOUSE', 'YARD', 'DISPATCHER', 'DRIVER', 'COMPANY_ADMIN', 'SUPER_ADMIN', 'CUSTOMER']), ctrl.getReportsOverview);
+router.get('/reports', authorizeRoles(['WAREHOUSE', 'YARD', 'DISPATCHER', 'DRIVER', 'COMPANY_ADMIN', 'SUPER_ADMIN', 'CUSTOMER']), ctrl.getReportsOverview);
 
 // 10. Labels, Tools & Spooler
 router.get('/labels', ctrl.getLabels);
 router.post('/labels/print', ctrl.printLabel);
 router.post('/tools/barcode-scan', ctrl.scanBarcode);
 router.get('/tools/spooler-queue', ctrl.getSpoolerQueue);
+
+// Batch Printing & Import/Export Tools
+router.get('/import-export/overview', ctrl.getImportExportOverview);
+router.get('/tools/import-export', ctrl.getImportExportOverview);
+router.get('/batch-printing/queue', ctrl.getBatchPrintingQueue);
+router.post('/batch-printing/spool', ctrl.spoolBatchPrint);
+router.delete('/batch-printing/completed', ctrl.clearCompletedBatchJobs);
+router.get('/batch-printing/printers', ctrl.getNetworkPrinters);
+router.post('/import', ctrl.importWarehouseData);
+router.get('/export/:type', ctrl.exportWarehouseData);
 
 // 11. Safety Checklist & Pre-Start
 router.get('/safety-checklists', ctrl.getSafetyChecklists);

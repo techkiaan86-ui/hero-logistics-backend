@@ -105,9 +105,31 @@ exports.create = async (req, res, next) => {
       }
     }
 
-    // Fallback/Generate loadRef
-    if (!payload.loadRef) {
-      payload.loadRef = `LD-${Math.floor(10000 + Math.random() * 90000)}`;
+    delete payload.id;
+    delete payload.rawId;
+
+    // Guaranteed unique loadRef
+    if (payload.loadRef) {
+      const existingRef = await prisma.load.findFirst({
+        where: { loadRef: String(payload.loadRef) }
+      });
+      if (existingRef) {
+        payload.loadRef = `${payload.loadRef}-${Math.floor(1000 + Math.random() * 9000)}`;
+      }
+    } else {
+      payload.loadRef = `LD-${Math.floor(10000 + Math.random() * 90000)}-${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    // Guaranteed unique draftId
+    if (payload.draftId) {
+      const existingDraft = await prisma.load.findFirst({
+        where: { draftId: String(payload.draftId) }
+      });
+      if (existingDraft) {
+        payload.draftId = `DRAFT-${Math.floor(10000 + Math.random() * 90000)}`;
+      }
+    } else {
+      delete payload.draftId;
     }
 
     // Fallback type
