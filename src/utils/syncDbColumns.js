@@ -7,6 +7,13 @@ async function syncMissingVehicleColumns() {
   synced = true;
   try {
     const alterStatements = [
+      `ALTER TABLE asset ADD COLUMN photoUrl TEXT`,
+      `ALTER TABLE asset ADD COLUMN warehouseId VARCHAR(255)`,
+      `ALTER TABLE warehouse ADD COLUMN photoUrl TEXT`,
+      `ALTER TABLE company ADD COLUMN defaultTaxRate DOUBLE DEFAULT 0.1`,
+      `ALTER TABLE user ADD COLUMN dob VARCHAR(255)`,
+      `ALTER TABLE user ADD COLUMN address TEXT`,
+      `ALTER TABLE user ADD COLUMN emergencyContact VARCHAR(255)`,
       `ALTER TABLE vehicle ADD COLUMN photoUrl TEXT`,
       `ALTER TABLE vehicle ADD COLUMN branchId VARCHAR(255)`,
       `ALTER TABLE vehicle ADD COLUMN regType VARCHAR(255)`,
