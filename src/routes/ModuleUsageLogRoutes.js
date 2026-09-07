@@ -6,6 +6,8 @@ const ModuleUsageLogController = require('../controllers/ModuleUsageLogControlle
 // Default open for testing, uncomment auth to protect routes
 // router.use(auth.verifyToken);
 
+router.post('/ping', ModuleUsageLogController.ping);
+
 router.route('/')
   .get(ModuleUsageLogController.getAll)
   .post(ModuleUsageLogController.create);

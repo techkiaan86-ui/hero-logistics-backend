@@ -1,218 +1,338 @@
 const prisma = require('../utils/prismaClient');
+const fs = require('fs');
+const path = require('path');
 
 exports.getDashboardMetrics = async (req, res) => {
   try {
-    // 1. KPIs — using correct field names from schema with safe catch blocks
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const fifteenMinsAgo = new Date(now.getTime() - 15 * 60 * 1000);
+    const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    // 1. Core Company Counts
     const totalCompanies = await prisma.company.count().catch(() => 0);
     const activeCompanies = await prisma.company.count({ where: { status: 'ACTIVE' } }).catch(() => 0);
     const trialCompanies = await prisma.company.count({ where: { status: 'TRIAL' } }).catch(() => 0);
-    const paidCompanies = activeCompanies;
+    const mtdCompanies = await prisma.company.count({ where: { createdAt: { gte: startOfMonth } } }).catch(() => 0);
 
-    // Monthly Revenue (MRR)
-    const subscriptions = await prisma.tenantSubscription.findMany({
+    // 2. Financial Metrics (Strict Separation: MRR vs Collected Revenue)
+    // A) Collected Cash Revenue (from Paid BillingRecords only)
+    const paidBillingAggregate = await prisma.billingRecord.aggregate({
+      _sum: { amount: true },
+      where: { status: 'PAID' }
+    }).catch(() => ({ _sum: { amount: 0 } }));
+    
+    const collectedRevenue = paidBillingAggregate._sum.amount || 0;
+
+    // B) MRR (from Active Subscriptions sum)
+    const activeSubscriptions = await prisma.tenantSubscription.findMany({
       where: { status: 'ACTIVE' },
       include: { plan: true }
     }).catch(() => []);
-    const monthlyRevenue = subscriptions.reduce(
-      (sum, sub) => sum + (sub.plan?.monthlyPrice || 0),
+
+    const currentMrr = activeSubscriptions.reduce(
+      (sum, sub) => sum + (sub.plan?.monthlyPrice || sub.amount || 0),
       0
     );
 
-    // PaymentAttempts
-    const failedPayments = await prisma.paymentAttempt.count({
-      where: { status: 'FAILED' }
+    // MRR Growth calculation comparing previous month active subscriptions
+    const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+    const prevSubscriptions = await prisma.tenantSubscription.findMany({
+      where: {
+        status: 'ACTIVE',
+        createdAt: { lte: prevMonthEnd }
+      },
+      include: { plan: true }
+    }).catch(() => []);
+
+    const prevMrr = prevSubscriptions.reduce(
+      (sum, sub) => sum + (sub.plan?.monthlyPrice || sub.amount || 0),
+      0
+    );
+
+    let mrrGrowthStr = '0.0%';
+    if (prevMrr > 0) {
+      const growthPct = ((currentMrr - prevMrr) / prevMrr) * 100;
+      mrrGrowthStr = `${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(1)}%`;
+    } else if (currentMrr > 0) {
+      mrrGrowthStr = 'New';
+    } else {
+      mrrGrowthStr = 'N/A (No Data)';
+    }
+
+    // 3. Concurrent Active Online User Sessions (Last 15 Mins)
+    const onlineUserSessionsCount = await prisma.userSession.count({
+      where: {
+        status: 'ACTIVE',
+        logoutAt: null,
+        lastPingAt: { gte: fifteenMinsAgo }
+      }
     }).catch(() => 0);
 
-    const openTickets = await prisma.supportTicket.count({
+    // 4. API Requests per Minute
+    const apiRequestsLastMin = await prisma.apiUsageLog.count({
+      where: { timestamp: { gte: oneMinuteAgo } }
+    }).catch(() => 0);
+    
+    const apiRpmStr = apiRequestsLastMin > 0 ? `${apiRequestsLastMin} RPM` : '0 RPM (Idle)';
+
+    // 5. Open Support Tickets
+    const openTicketsCount = await prisma.supportTicket.count({
       where: { status: 'OPEN' }
     }).catch(() => 0);
 
-    // User counts
-    const activeUsers = await prisma.user.count({
-      where: { status: 'ACTIVE' }
-    }).catch(() => 0);
+    // 6. SLA Score Calculation (Strict N/A if no monitoring logs exist)
+    const apiLogs30Days = await prisma.apiUsageLog.findMany({
+      where: { timestamp: { gte: thirtyDaysAgo } },
+      select: { statusCode: true }
+    }).catch(() => []);
 
-    // 2. Chart Data (MRR Revenue Timeline)
-    const chartData = [
-      { name: 'Jan', mrr: 21000 },
-      { name: 'Feb', mrr: 28000 },
-      { name: 'Mar', mrr: 28000 },
-      { name: 'Apr', mrr: 30000 },
-      { name: 'May', mrr: 30000 },
-      { name: 'Jun', mrr: monthlyRevenue > 0 ? monthlyRevenue : 42910 },
+    let slaScoreStr = 'N/A (No Data)';
+    if (apiLogs30Days.length > 0) {
+      const successfulReqs = apiLogs30Days.filter(l => l.statusCode >= 200 && l.statusCode < 400).length;
+      const slaPct = (successfulReqs / apiLogs30Days.length) * 100;
+      slaScoreStr = `${slaPct.toFixed(2)}%`;
+    }
+
+    // 7. Real Storage Consumption Calculation (DB Aggregate for speed & responsiveness)
+    const dbDocsAggregate = await prisma.document.aggregate({
+      _sum: { fileSize: true }
+    }).catch(() => ({ _sum: { fileSize: 0 } }));
+
+    const dbPhotosAggregate = await prisma.proofPhoto.aggregate({
+      _sum: { fileSize: true }
+    }).catch(() => ({ _sum: { fileSize: 0 } }));
+
+    const totalStorageBytes = (dbDocsAggregate._sum.fileSize || 0) + (dbPhotosAggregate._sum.fileSize || 0);
+    const totalStorageGB = totalStorageBytes / (1024 * 1024 * 1024);
+
+    // Storage capacity limit from active plans
+    const allPlans = await prisma.subscriptionPlan.findMany({
+      select: { storageLimitGB: true }
+    }).catch(() => []);
+    const maxPlanStorageGB = allPlans.reduce((max, p) => Math.max(max, p.storageLimitGB || 10), 10);
+    const storageConsumptionStr = `${totalStorageGB < 0.01 ? totalStorageGB.toFixed(3) : totalStorageGB.toFixed(2)} GB / ${maxPlanStorageGB} GB`;
+
+    // 8. Revenue Analytics (Line Chart 1: Actual Paid Billing Records per Month)
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const revenueData = [];
+    
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const mStart = new Date(d.getFullYear(), d.getMonth(), 1);
+      const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+
+      const monthPaidAgg = await prisma.billingRecord.aggregate({
+        _sum: { amount: true },
+        where: {
+          status: 'PAID',
+          createdAt: { gte: mStart, lte: mEnd }
+        }
+      }).catch(() => ({ _sum: { amount: 0 } }));
+
+      revenueData.push({
+        name: monthNames[d.getMonth()],
+        value: monthPaidAgg._sum.amount || 0
+      });
+    }
+
+    // 9. Company Growth (Bar Chart: Actual Company Registrations per Month)
+    const growthData = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const mStart = new Date(d.getFullYear(), d.getMonth(), 1);
+      const mEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+
+      const count = await prisma.company.count({
+        where: {
+          createdAt: { gte: mStart, lte: mEnd }
+        }
+      }).catch(() => 0);
+
+      growthData.push({
+        name: monthNames[d.getMonth()],
+        value: count
+      });
+    }
+
+    // 10. Module Usage Analytics (Progress Bars: Real ModuleUsageLogs Share)
+    const moduleUsageLogsRaw = await prisma.moduleUsageLog.groupBy({
+      by: ['moduleKey'],
+      _count: { moduleKey: true },
+      where: { accessedAt: { gte: thirtyDaysAgo } }
+    }).catch(() => []);
+
+    const totalModuleHits = moduleUsageLogsRaw.reduce((sum, item) => sum + item._count.moduleKey, 0);
+
+    const canonicalModules = [
+      { key: 'dispatch', name: 'Dispatch / Load Management', color: 'bg-brand-500' },
+      { key: 'gps', name: 'Live GPS Tracking', color: 'bg-[#10B981]' },
+      { key: 'driver', name: 'Driver Management', color: 'bg-[#6366F1]' },
+      { key: 'fleet', name: 'Vehicle / Fleet', color: 'bg-[#F97316]' },
+      { key: 'warehouse', name: 'Warehouse / Yard', color: 'bg-[#8B5CF6]' },
+      { key: 'accounts', name: 'Accounts / Payroll', color: 'bg-[#06B6D4]' },
+      { key: 'ai_parsing', name: 'AI Load Parsing', color: 'bg-[#EC4899]' },
+      { key: 'customer_portal', name: 'Customer Portal', color: 'bg-[#EA580C]' }
     ];
 
-    // 3. Tenant Overview
-    const recentTenantsRaw = await prisma.company.findMany({
-      take: 10,
-      orderBy: { createdAt: 'desc' },
+    const moduleUsageData = canonicalModules.map(mod => {
+      const found = moduleUsageLogsRaw.find(m => m.moduleKey.toLowerCase().includes(mod.key));
+      const count = found ? found._count.moduleKey : 0;
+      const percentage = totalModuleHits > 0 ? Math.round((count / totalModuleHits) * 100) : 0;
+      return {
+        name: mod.name,
+        percentage,
+        color: mod.color
+      };
+    });
+
+    // 11. API Usage Timeline (Line Chart 3: Requests per Day for Current Week)
+    const daysOfWeek = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const apiUsageData = [];
+    
+    for (let i = 0; i < 7; i++) {
+      const dayStart = new Date(startOfWeek);
+      dayStart.setDate(startOfWeek.getDate() + i);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setHours(23, 59, 59, 999);
+
+      const dayReqs = await prisma.apiUsageLog.count({
+        where: {
+          timestamp: { gte: dayStart, lte: dayEnd }
+        }
+      }).catch(() => 0);
+
+      apiUsageData.push({
+        name: daysOfWeek[i],
+        value: dayReqs
+      });
+    }
+
+    // 12. Storage Usage per Company Table
+    const allCompaniesRaw = await prisma.company.findMany({
       include: {
-        _count: { select: { users: true } },
         tenantSubscription: {
           include: { plan: true }
-        }
-      }
-    }).catch(() => []);
-
-    const recentTenants = recentTenantsRaw.map(company => {
-      const activeSub = company.tenantSubscription;
-      return {
-        id: company.id,
-        name: company.name,
-        plan: activeSub?.plan?.name || 'No Plan',
-        status: company.status,
-        users: company._count?.users || 0,
-        mrr: activeSub?.plan?.monthlyPrice
-          ? `$${activeSub.plan.monthlyPrice}`
-          : activeSub?.amount
-            ? `$${activeSub.amount}`
-            : '$0',
-        trialExpiry: activeSub?.nextRenewal
-          ? new Date(activeSub.nextRenewal).toISOString().split('T')[0]
-          : 'N/A',
-        lastActive: 'Today'
-      };
-    });
-
-    // 4. Platform Health Center
-    const healthCenter = {
-      systemStatus: {
-        apiHealth: '99.98%',
-        databaseHealth: 'Synced',
-        storageHealth: '52.3% Free',
-        queueHealth: '0 pending',
-        aiProcessingHealth: 'Active'
+        },
+        documents: { select: { fileSize: true } }
       },
-      usageMetrics: {
-        activeSessions: '42 active',
-        requestsPerMinute: '1,250 RPM',
-        storageConsumption: '4.78 TB / 10 TB',
-        aiJobsProcessed: '14,050 runs'
-      }
-    };
-
-    // 5. Ticket Widget Stats
-    const tickets = {
-      open: await prisma.supportTicket.count({ where: { status: 'OPEN' } }).catch(() => 0),
-      highPriority: await prisma.supportTicket.count({ where: { priority: 'HIGH' } }).catch(() => 0),
-      waitingCustomer: await prisma.supportTicket.count({ where: { status: 'WAITING_CUSTOMER' } }).catch(() => 0),
-      waitingInternal: await prisma.supportTicket.count({ where: { status: 'WAITING_INTERNAL' } }).catch(() => 0)
-    };
-
-    // 6. Subscription Monitoring
-    const subMonitoring = {
-      activePlans: subscriptions.length,
-      expiringThisMonth: 1,
-      overduePayments: failedPayments,
-      upgradeOpportunities: 2
-    };
-
-    // 7. Recent Platform Activity
-    const recentActivityRaw = await prisma.auditLog.findMany({
-      take: 5,
       orderBy: { createdAt: 'desc' }
     }).catch(() => []);
 
-    const recentActivity = recentActivityRaw.map(log => ({
-      id: log.id,
-      title: log.action || 'System Action',
-      details: log.operator ? `By ${log.operator}` : 'System',
-      timestamp: log.createdAt ? new Date(log.createdAt).toLocaleString() : new Date().toLocaleString()
-    }));
+    const storageData = allCompaniesRaw.map(company => {
+      const docBytes = company.documents?.reduce((sum, d) => sum + (d.fileSize || 0), 0) || 0;
+      const usedMB = docBytes / (1024 * 1024);
+      const usedGB = usedMB / 1024;
+      const planLimitGB = company.tenantSubscription?.plan?.storageLimitGB || 10;
+      const limitBytes = planLimitGB * 1024 * 1024 * 1024;
+      const pct = limitBytes > 0 ? Math.min(100, Math.round((docBytes / limitBytes) * 100)) : 0;
 
-    // 8. Storage & Login Analytics
-    const allCompanies = await prisma.company.findMany({
-      select: { id: true, name: true, status: true, _count: { select: { users: true } } },
-      orderBy: { createdAt: 'desc' }
-    }).catch(() => []);
-
-    const storageData = allCompanies.map((c, i) => {
-      const seed = c.id.charCodeAt(0) + c.id.charCodeAt(c.id.length - 1) + i;
-      const tbUsed = ((seed % 100) / 10) + 0.1;
-      const limit = (seed % 15) + 5;
-      const percentage = Math.min(Math.round((tbUsed / limit) * 100), 100);
       return {
-        company: c.name,
-        storage: `${tbUsed.toFixed(2)} TB`,
-        percentage: `${percentage}%`,
-        limit: percentage,
-        color: i % 3 === 0 ? 'bg-rose-500' : 'bg-[#FFD400]'
+        company: company.name,
+        storage: usedGB >= 1 ? `${usedGB.toFixed(2)} GB` : `${usedMB.toFixed(1)} MB`,
+        percentage: `${pct}%`,
+        limit: pct,
+        color: pct > 80 ? 'bg-rose-500' : 'bg-[#FFD400]'
       };
     });
 
-    const loginAnalytics = allCompanies.map((c, i) => {
-      const seed = c.id.charCodeAt(1 % c.id.length) + i;
-      return {
-        company: c.name,
-        monthlyLogins: (seed % 300) + 20,
-        activeUsers: c._count?.users || (seed % 10) + 1,
-        lastLogin: new Date(Date.now() - (seed % 100000) * 1000).toLocaleString(),
-        score: (seed % 40) + 60
-      };
-    });
+    // 13. Login Analytics Table
+    const loginAnalytics = await Promise.all(
+      allCompaniesRaw.map(async (company) => {
+        const monthlyLoginsCount = await prisma.userSession.count({
+          where: {
+            companyId: company.id,
+            loginAt: { gte: thirtyDaysAgo }
+          }
+        }).catch(() => 0);
 
-    // 9. Growth and API Usage Data
-    const growthData = [
-      { name: 'Jan', value: Math.max(1, Math.floor(totalCompanies * 0.1)) },
-      { name: 'Feb', value: Math.max(1, Math.floor(totalCompanies * 0.15)) },
-      { name: 'Mar', value: Math.max(1, Math.floor(totalCompanies * 0.1)) },
-      { name: 'Apr', value: Math.max(2, Math.floor(totalCompanies * 0.2)) },
-      { name: 'May', value: Math.max(1, Math.floor(totalCompanies * 0.15)) },
-      { name: 'Jun', value: Math.max(1, Math.floor(totalCompanies * 0.3)) }
-    ];
+        const recentSessions = await prisma.userSession.findMany({
+          where: { companyId: company.id, loginAt: { gte: thirtyDaysAgo } },
+          select: { userId: true, loginAt: true }
+        }).catch(() => []);
 
-    const apiUsageData = [
-      { name: 'Mon', value: 850 + (activeCompanies * 10) },
-      { name: 'Tue', value: 950 + (activeCompanies * 12) },
-      { name: 'Wed', value: 890 + (activeCompanies * 11) },
-      { name: 'Thu', value: 1150 + (activeCompanies * 15) },
-      { name: 'Fri', value: 1100 + (activeCompanies * 14) },
-      { name: 'Today', value: 1150 + (activeCompanies * 16) }
-    ];
+        const distinctUserIds = new Set(recentSessions.map(s => s.userId)).size;
+        const activeUsersCount = distinctUserIds || (company._count?.users || 0);
 
+        const latestSession = await prisma.userSession.findFirst({
+          where: { companyId: company.id },
+          orderBy: { loginAt: 'desc' }
+        }).catch(() => null);
+
+        const lastLoginStr = latestSession?.loginAt
+          ? new Date(latestSession.loginAt).toLocaleString()
+          : company.lastLogin
+            ? new Date(company.lastLogin).toLocaleString()
+            : 'No recent logins';
+
+        const activityScore = monthlyLoginsCount > 0
+          ? Math.min(100, Math.round((monthlyLoginsCount / (Math.max(1, activeUsersCount) * 20)) * 100))
+          : 0;
+
+        return {
+          company: company.name,
+          monthlyLogins: monthlyLoginsCount,
+          activeUsers: activeUsersCount,
+          lastLogin: lastLoginStr,
+          score: activityScore
+        };
+      })
+    );
+
+    // Failed Payments count from PaymentAttempt table
+    const failedPaymentsCount = await prisma.paymentAttempt.count({
+      where: { status: 'FAILED' }
+    }).catch(() => 0);
+
+    // Response structure strictly matching frontend expect keys
     res.status(200).json({
       success: true,
       data: {
         kpis: {
+          monthlyRevenue: collectedRevenue,
+          mrrGrowth: mrrGrowthStr,
+          totalCompanies,
           activeCompanies,
+          mtdCompanies,
           trialCompanies,
-          paidCompanies,
-          monthlyRevenue,
-          failedPayments,
-          openTickets,
-          activeUsers,
-          platformUsage: '14.2%'
+          activeUsers: onlineUserSessionsCount,
+          failedPayments: failedPaymentsCount,
+          openTickets: openTicketsCount
         },
-        chartData,
-        recentTenants,
-        healthCenter,
-        tickets,
-        subMonitoring,
-        recentActivity,
+        chartData: revenueData,
+        growthData,
+        apiUsageData,
+        moduleUsageData,
         storageData,
         loginAnalytics,
-        growthData,
-        apiUsageData
+        healthCenter: {
+          systemStatus: {
+            apiHealth: slaScoreStr,
+            databaseHealth: 'Synced',
+            storageHealth: 'Normal',
+            queueHealth: '0 pending',
+            aiProcessingHealth: 'Active'
+          },
+          usageMetrics: {
+            activeSessions: `${onlineUserSessionsCount} online`,
+            requestsPerMinute: apiRpmStr,
+            storageConsumption: storageConsumptionStr,
+            aiJobsProcessed: '0 runs'
+          }
+        }
       }
     });
 
   } catch (error) {
     console.error('Error in getDashboardMetrics:', error.message);
-    res.status(200).json({
-      success: true,
-      data: {
-        kpis: { activeCompanies: 1, trialCompanies: 0, paidCompanies: 1, monthlyRevenue: 0, failedPayments: 0, openTickets: 0, activeUsers: 1, platformUsage: '10%' },
-        chartData: [],
-        recentTenants: [],
-        healthCenter: { systemStatus: { apiHealth: '100%', databaseHealth: 'Online', storageHealth: 'Normal', queueHealth: '0 pending', aiProcessingHealth: 'Active' }, usageMetrics: {} },
-        tickets: { open: 0, highPriority: 0, waitingCustomer: 0, waitingInternal: 0 },
-        subMonitoring: { activePlans: 1, expiringThisMonth: 0, overduePayments: 0, upgradeOpportunities: 0 },
-        recentActivity: [],
-        storageData: [],
-        loginAnalytics: [],
-        growthData: [],
-        apiUsageData: []
-      }
+    res.status(500).json({
+      success: false,
+      message: 'Failed to compute real system analytics',
+      error: error.message
     });
   }
 };

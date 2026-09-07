@@ -46,6 +46,32 @@ exports.getById = async (req, res, next) => {
   }
 };
 
+// Log module access ping from client
+exports.ping = async (req, res, next) => {
+  try {
+    const { moduleKey, moduleName } = req.body;
+    if (!moduleKey) {
+      return sendError(res, { code: ERROR_CODES.BAD_REQUEST, message: 'moduleKey is required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+    const userId = req.user?.id || req.user?.userId || null;
+    const companyId = req.user?.companyId || req.user?.tenantId || null;
+
+    const data = await prisma.moduleUsageLog.create({
+      data: {
+        moduleKey,
+        moduleName: moduleName || moduleKey,
+        userId,
+        companyId,
+        accessedAt: new Date()
+      }
+    });
+
+    return sendSuccess(res, data, HTTP_STATUS.CREATED);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Create new ModuleUsageLog
 exports.create = async (req, res, next) => {
   try {

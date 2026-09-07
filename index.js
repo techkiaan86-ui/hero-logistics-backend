@@ -23,7 +23,10 @@ app.use(cookieParser());
 app.use('/uploads', cors(), express.static(path.join(__dirname, 'public/uploads')));
 app.use(express.static(path.join(__dirname, 'public')));
 
+const { analyticsLogger } = require('./src/middleware/analyticsLogger');
+
 // Base API routes
+app.use(analyticsLogger);
 app.use('/api/v1', apiRoutes);
 app.use('/api', apiRoutes);
 
