@@ -1436,41 +1436,66 @@ model PaymentAttempt {
 model UserSession {
   id         String    @id @default(uuid())
   userId     String
-  user       User      @relation(fields: [userId], references: [id])
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId  String?
+  company    Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
   tokenHash  String?   @db.Text
   ipAddress  String?
   userAgent  String?   @db.Text
+  status     String    @default("ACTIVE") // ACTIVE, EXPIRED, LOGGED_OUT
   loginTime  DateTime  @default(now())
+  loginAt    DateTime  @default(now())
+  lastPingAt DateTime  @default(now())
   logoutTime DateTime?
+  logoutAt   DateTime?
   expiresAt  DateTime?
   isActive   Boolean   @default(true)
 
+  @@index([companyId])
+  @@index([userId])
+  @@index([status])
+  @@index([loginAt])
+  @@index([lastPingAt])
   @@map("user_session")
 }
 
 model ApiUsageLog {
   id             String   @id @default(uuid())
-  companyId      String
-  company        Company  @relation(fields: [companyId], references: [id])
+  companyId      String?
+  company        Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   endpoint       String
   method         String // GET, POST, PUT, DELETE
   statusCode     Int
   responseTimeMs Int
   timestamp      DateTime @default(now())
 
+  @@index([companyId])
+  @@index([userId])
+  @@index([timestamp])
+  @@index([statusCode])
   @@map("api_usage_log")
 }
 
 model ModuleUsageLog {
   id           String   @id @default(uuid())
-  companyId    String
-  company      Company  @relation(fields: [companyId], references: [id])
-  featureId    String
-  feature      Feature  @relation(fields: [featureId], references: [id])
+  companyId    String?
+  company      Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  featureId    String?
+  feature      Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
+  moduleKey    String?
+  moduleName   String?
   accessCount  Int      @default(0)
+  accessedAt   DateTime @default(now())
   lastAccessed DateTime @default(now())
 
-  @@unique([companyId, featureId])
+  @@index([companyId])
+  @@index([userId])
+  @@index([moduleKey])
+  @@index([accessedAt])
   @@map("module_usage_log")
 }
 
@@ -2951,64 +2976,6 @@ model PlatformSetting {
   @@map("platform_setting")
 }
 
-model UserSession {
-  id         String    @id @default(uuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  companyId  String?
-  company    Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  ipAddress  String?
-  userAgent  String?
-  status     String    @default("ACTIVE") // ACTIVE, EXPIRED, LOGGED_OUT
-  loginAt    DateTime  @default(now())
-  lastPingAt DateTime  @default(now())
-  logoutAt   DateTime?
-
-  @@index([companyId])
-  @@index([userId])
-  @@index([status])
-  @@index([loginAt])
-  @@index([lastPingAt])
-  @@map("user_session")
-}
-
-model ApiUsageLog {
-  id             String   @id @default(uuid())
-  companyId      String?
-  company        Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  userId         String?
-  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  endpoint       String
-  method         String
-  statusCode     Int
-  responseTimeMs Int
-  timestamp      DateTime @default(now())
-
-  @@index([companyId])
-  @@index([userId])
-  @@index([timestamp])
-  @@index([statusCode])
-  @@map("api_usage_log")
-}
-
-model ModuleUsageLog {
-  id         String   @id @default(uuid())
-  companyId  String?
-  company    Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  userId     String?
-  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  featureId  String?
-  feature    Feature? @relation(fields: [featureId], references: [id], onDelete: SetNull)
-  moduleKey  String
-  moduleName String
-  accessedAt DateTime @default(now())
-
-  @@index([companyId])
-  @@index([userId])
-  @@index([moduleKey])
-  @@index([accessedAt])
-  @@map("module_usage_log")
-}
 
 model CompanyStorageAudit {
   id         String   @id @default(uuid())
