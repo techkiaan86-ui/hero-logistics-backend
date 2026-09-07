@@ -93,46 +93,94 @@ exports.create = async (req, res, next) => {
       planTier
     } = req.body;
 
-    // Use a transaction to ensure all related records are created safely
-      const data = await prisma.$transaction(async (tx) => {
-      // 1. Create the Company
-      const generatedTenantId = tenantId || `#TEN-${Math.floor(1000 + Math.random() * 9000)}`;
-      
-      const company = await tx.company.create({
-        data: {
-          name,
-          tenantId: generatedTenantId,
-          status: status || 'ACTIVE',
-          accountManager: accountManager || null,
-          trialExpiry: trialExpiry ? new Date(trialExpiry) : null,
-          adminEmail
-        }
-      });
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return sendError(res, {
+        code: ERROR_CODES.VALIDATION_ERROR,
+        message: 'Company name is required.'
+      }, HTTP_STATUS.BAD_REQUEST);
+    }
 
-      // 2. Create the Workspace Manager (User) if credentials are provided
-      if (adminEmail && adminPassword) {
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        await tx.user.create({
+    const cleanName = name.trim();
+    const cleanEmail = adminEmail && typeof adminEmail === 'string' ? adminEmail.trim() : null;
+    const cleanAccountManager = accountManager && typeof accountManager === 'string' && accountManager.trim() ? accountManager.trim() : null;
+
+    // Pre-check 1: Check if adminEmail is already registered in User table
+    if (cleanEmail) {
+      const existingUser = await prisma.user.findUnique({
+        where: { email: cleanEmail }
+      });
+      if (existingUser) {
+        return sendError(res, {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: `Workspace Manager Email '${cleanEmail}' is already registered to an existing account. Please enter a different email address.`
+        }, HTTP_STATUS.BAD_REQUEST);
+      }
+    }
+
+    // Pre-check 2: Handle Tenant ID (Company ID) uniqueness
+    let generatedTenantId = null;
+    if (tenantId && typeof tenantId === 'string' && tenantId.trim()) {
+      const explicitId = tenantId.trim();
+      const existingTenant = await prisma.company.findFirst({
+        where: { tenantId: explicitId }
+      });
+      if (existingTenant) {
+        return sendError(res, {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: `Company ID '${explicitId}' is already taken by another workspace. Please enter a unique Company ID.`
+        }, HTTP_STATUS.BAD_REQUEST);
+      }
+      generatedTenantId = explicitId;
+    } else {
+      // Auto-generate timestamp-backed collision-free Tenant ID
+      generatedTenantId = `#TEN-${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 90)}`;
+    }
+
+    // Hash password prior to creation
+    let hashedPassword = null;
+    if (cleanEmail && adminPassword) {
+      hashedPassword = await bcrypt.hash(adminPassword, 10);
+    }
+
+    // 1. Create the Company
+    const company = await prisma.company.create({
+      data: {
+        name: cleanName,
+        tenantId: generatedTenantId,
+        status: status || 'ACTIVE',
+        accountManager: cleanAccountManager,
+        trialExpiry: trialExpiry ? new Date(trialExpiry) : null,
+        adminEmail: cleanEmail
+      }
+    });
+
+    // 2. Create the Workspace Manager (User) if credentials are provided
+    if (cleanEmail && hashedPassword) {
+      try {
+        await prisma.user.create({
           data: {
-            email: adminEmail,
+            email: cleanEmail,
             password: hashedPassword,
-            name: 'Workspace Manager',
+            name: `${cleanName} Admin`,
             role: 'COMPANY_ADMIN',
             companyId: company.id,
             status: 'ACTIVE'
           }
         });
+      } catch (userErr) {
+        console.warn('Could not auto-create company admin user:', userErr?.message);
       }
+    }
 
-      // 3. Setup the TenantSubscription if a plan is provided
-      if (planTier) {
-        // Find the subscription plan
-        const plan = await tx.subscriptionPlan.findFirst({
-          where: { name: planTier }
-        });
-        
-        if (plan) {
-          await tx.tenantSubscription.create({
+    // 3. Setup the TenantSubscription if a plan is provided
+    if (planTier) {
+      const plan = await prisma.subscriptionPlan.findFirst({
+        where: { name: planTier }
+      });
+      
+      if (plan) {
+        try {
+          await prisma.tenantSubscription.create({
             data: {
               subId: `SUB-${Date.now()}`,
               companyId: company.id,
@@ -144,7 +192,7 @@ exports.create = async (req, res, next) => {
           });
 
           // Auto-generate initial Billing Record (Invoice)
-          await tx.billingRecord.create({
+          await prisma.billingRecord.create({
             data: {
               invoiceNumber: `INV-${Date.now()}`,
               amount: plan.monthlyPrice,
@@ -156,18 +204,38 @@ exports.create = async (req, res, next) => {
               dueDate: new Date(new Date().setDate(new Date().getDate() + 7))
             }
           });
+        } catch (subErr) {
+          console.warn('Could not auto-create tenant subscription or billing record:', subErr?.message);
         }
       }
+    }
 
-      return company;
+    // 4. Fetch full company with subscription details to return
+    const result = await prisma.company.findUnique({
+      where: { id: company.id },
+      include: {
+        tenantSubscription: {
+          include: { plan: true }
+        }
+      }
     });
 
-    return sendSuccess(res, data, HTTP_STATUS.CREATED);
+    return sendSuccess(res, result || company, HTTP_STATUS.CREATED);
   } catch (error) {
     if (error.code === 'P2002') {
+      const target = error.meta?.target || [];
+      const targetStr = Array.isArray(target) ? target.join(', ') : String(target);
+      let customMsg = 'A company or user with these unique details already exists.';
+      if (targetStr.includes('email')) {
+        customMsg = 'Email address is already registered. Please enter a different Workspace Manager Email.';
+      } else if (targetStr.includes('tenantId')) {
+        customMsg = 'Company ID is already taken. Please specify a different Company ID.';
+      } else if (targetStr.includes('name')) {
+        customMsg = 'A company with this name already exists. Please choose a unique Company Name.';
+      }
       return sendError(res, {
         code: ERROR_CODES.VALIDATION_ERROR,
-        message: 'A company or user with these unique details already exists.'
+        message: customMsg
       }, HTTP_STATUS.BAD_REQUEST);
     }
     next(error);

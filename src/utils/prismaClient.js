@@ -1,35 +1,30 @@
-require('dotenv').config(); // Trigger nodemon restart for cleaned fallback entries
+require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
 const { PrismaMariaDb } = require('@prisma/adapter-mariadb');
+const mariadb = require('mariadb');
 
-let prisma;
+const dbUrl = process.env.DATABASE_URL || 'mysql://root:@127.0.0.1:3306/hero-logistic';
+const urlObj = new URL(dbUrl);
 
-try {
-  const dbUrl = process.env.DATABASE_URL || 'mysql://root:@127.0.0.1:3306/hero-logistic';
-  const urlObj = new URL(dbUrl);
-  
-  const host = (urlObj.hostname === 'localhost' || !urlObj.hostname) ? '127.0.0.1' : urlObj.hostname;
-  const port = Number(urlObj.port) || 3306;
-  const user = urlObj.username || 'root';
-  const password = urlObj.password ? decodeURIComponent(urlObj.password) : '';
-  const database = urlObj.pathname ? urlObj.pathname.replace(/^\//, '') : 'hero-logistic';
+const host = (urlObj.hostname === 'localhost' || !urlObj.hostname) ? '127.0.0.1' : urlObj.hostname;
+const port = Number(urlObj.port) || 3306;
+const user = urlObj.username || 'root';
+const password = urlObj.password ? decodeURIComponent(urlObj.password) : '';
+const database = urlObj.pathname ? urlObj.pathname.replace(/^\//, '') : 'hero-logistic';
 
-  const adapter = new PrismaMariaDb({
-    host,
-    port,
-    user,
-    password,
-    database,
-    connectionLimit: 5,
-    allowPublicKeyRetrieval: true,
-    connectTimeout: 5000,
-    idleTimeout: 3000
-  });
+const pool = mariadb.createPool({
+  host,
+  port,
+  user,
+  password,
+  database,
+  connectionLimit: 15,
+  allowPublicKeyRetrieval: true,
+  acquireTimeout: 10000
+});
 
-  prisma = new PrismaClient({ adapter });
-} catch (err) {
-  console.error('Failed to initialize PrismaMariaDb adapter, falling back to standard PrismaClient:', err);
-  prisma = new PrismaClient();
-}
+const adapter = new PrismaMariaDb(pool);
+
+const prisma = new PrismaClient({ adapter });
 
 module.exports = prisma;
