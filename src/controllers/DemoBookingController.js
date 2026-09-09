@@ -14,11 +14,18 @@ exports.getAll = async (req, res, next) => {
         { presenterId: req.user.id },
         { lead: { repId: req.user.id } }
       ];
-    } else if (req.query.repId) {
-      where.OR = [
-        { presenterId: req.query.repId },
-        { lead: { repId: req.query.repId } }
-      ];
+    } else if (req.query.repId && req.query.repId !== 'ALL') {
+      if (req.query.repId === 'unassigned') {
+        where.OR = [
+          { presenterId: null },
+          { lead: { repId: null } }
+        ];
+      } else {
+        where.OR = [
+          { presenterId: req.query.repId },
+          { lead: { repId: req.query.repId } }
+        ];
+      }
     }
 
     const [data, total] = await Promise.all([

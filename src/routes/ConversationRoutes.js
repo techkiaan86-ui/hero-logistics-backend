@@ -6,6 +6,8 @@ const ConversationController = require('../controllers/ConversationController');
 // Default open for testing, uncomment auth to protect routes
 // router.use(auth.verifyToken);
 
+router.get('/depot', ConversationController.getDepotComms);
+
 router.route('/')
   .get(ConversationController.getAll)
   .post(ConversationController.create);

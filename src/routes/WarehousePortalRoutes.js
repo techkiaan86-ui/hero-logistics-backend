@@ -4,6 +4,11 @@ const ctrl = require('../controllers/WarehousePortalController');
 const { verifyToken, authorizeRoles } = require('../middlewares/auth');
 const { resolveTenant } = require('../middlewares/tenantResolver');
 
+// Open endpoint for Find Stock, Receive Inbound, and Movements portal menus
+router.get('/find-stock', ctrl.getFindStockPortal);
+router.get('/receive-inbound', ctrl.getReceiveInboundPortal);
+router.get('/movements-init', ctrl.getRelocationPortalData);
+
 // Apply auth & tenant resolver middleware across all Warehouse Portal routes
 router.use(verifyToken, resolveTenant, authorizeRoles(['WAREHOUSE', 'YARD', 'DRIVER', 'COMPANY_ADMIN', 'SUPER_ADMIN', 'CUSTOMER']));
 
@@ -15,6 +20,8 @@ router.get('/notifications', ctrl.getNotifications);
 // 2. Find Stock / Stock Inventory
 router.get('/stock', ctrl.getStock);
 router.get('/stock/:id', ctrl.getStockById);
+router.put('/stock/:id', ctrl.updateStock);
+router.patch('/stock/:id', ctrl.updateStock);
 router.post('/stock/move', ctrl.moveStock);
 router.post('/stock/scan', ctrl.scanBarcode);
 
@@ -32,6 +39,7 @@ router.patch('/load-lanes/:laneId/assign', ctrl.assignDriverToLane);
 router.post('/load-lanes/:laneId/stage-items', ctrl.stageItemsToLane);
 router.post('/load-lanes/move-items', ctrl.moveLaneItems);
 router.post('/load-lanes/:laneId/clear', ctrl.clearLoadLane);
+router.get('/yard-locations', ctrl.getYardLocations);
 router.get('/load-lanes/:laneId/manifest', ctrl.printManifest);
 // 5. Dispatch Ready & Outbound
 router.get('/dispatch-ready', ctrl.getDispatchReady);
@@ -39,8 +47,10 @@ router.post('/dispatch-ready/:loadId/dispatch', ctrl.dispatchLoad);
 
 // 6. Holding Areas (SA-01 to SA-12)
 router.get('/holding-areas', ctrl.getHoldingAreas);
+router.post('/holding-areas', ctrl.createHoldingArea);
 router.post('/holding-areas/:id/move-stock', ctrl.moveHoldingAreaStock);
 router.patch('/holding-areas/:id/assign', ctrl.assignHoldingAreaToLane);
+router.patch('/holding-areas/:id/status', ctrl.updateHoldingAreaStatus);
 router.get('/staging', ctrl.getHoldingAreas);
 
 // 7. Movement History & Audit Logs
@@ -105,6 +115,7 @@ router.post('/shift/clock-out', ctrl.clockOut);
 
 // 13. Messages & Support
 router.get('/support/dashboard', ctrl.getSupportDashboard);
+router.get('/support', ctrl.getSupportDashboard);
 router.post('/support/message', ctrl.sendMessage);
 router.post('/support/ticket', ctrl.createSupportTicket);
 

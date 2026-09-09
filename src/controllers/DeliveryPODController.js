@@ -102,10 +102,57 @@ exports.create = async (req, res, next) => {
     const data = await prisma.deliveryPOD.create({
       data: payload,
       include: {
-        load: true,
+        load: { include: { customer: true, items: true } },
         driver: true
       }
     });
+
+    // 1. Update Load status to DELIVERED
+    if (data.loadId) {
+      await prisma.load.update({
+        where: { id: data.loadId },
+        data: { status: 'DELIVERED', deliveryEta: new Date() }
+      }).catch(() => null);
+
+      // 2. Prevent duplicate invoice creation: check if draft/invoice for load exists
+      const existingInvoice = await prisma.customerInvoice.findFirst({
+        where: { loadId: data.loadId }
+      }).catch(() => null);
+
+      if (!existingInvoice && data.load) {
+        const companyId = data.load.companyId;
+        const customerId = data.load.customerId;
+
+        // Calculate total amount from load items rate or default
+        const itemsCount = data.load.items?.length || 1;
+        const totalAmount = data.load.items?.reduce((sum, it) => sum + (it.unitPrice || 450), 0) || (itemsCount * 450);
+        
+        const invoiceNumber = `INV-${data.load.loadRef || 'LD-' + data.loadId.slice(0, 6)}`;
+
+        await prisma.customerInvoice.create({
+          data: {
+            invoiceNumber,
+            loadId: data.loadId,
+            customerId: customerId || (await prisma.customer.findFirst({ where: companyId ? { companyId } : {} }))?.id,
+            amount: totalAmount,
+            appliedTaxRate: 0.10,
+            status: 'DRAFT',
+            dueDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+            notes: `Auto-generated Draft Invoice from POD for Load ${data.load.loadRef || data.loadId}. Delivered on ${new Date().toLocaleDateString('en-GB')}`,
+            type: 'Freight Linehaul',
+            items: data.load.items?.map(it => ({
+              desc: `${it.make || 'Vehicle'} ${it.model || 'Freight'} (${it.vin || it.rego || 'VIN'})`,
+              qty: 1,
+              rate: it.unitPrice || 450,
+              amount: it.unitPrice || 450,
+              gst: (it.unitPrice || 450) * 0.1,
+              total: (it.unitPrice || 450) * 1.1
+            })) || [{ desc: `Freight Transport Service - ${data.load.loadRef}`, qty: 1, rate: totalAmount, amount: totalAmount, gst: totalAmount * 0.1, total: totalAmount * 1.1 }]
+          }
+        }).catch(() => null);
+      }
+    }
+
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) {
     next(error);

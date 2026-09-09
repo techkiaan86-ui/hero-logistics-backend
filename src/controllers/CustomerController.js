@@ -33,6 +33,99 @@ exports.getAll = async (req, res, next) => {
   }
 };
 
+// Single dedicated endpoint for Customers Portal menu
+exports.getPortalData = async (req, res, next) => {
+  try {
+    await syncMissingVehicleColumns();
+    let companyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
+    if (!companyId) {
+      const firstCompany = await prisma.company.findFirst({ select: { id: true } });
+      if (firstCompany) companyId = firstCompany.id;
+    }
+
+    const companyWhere = companyId ? { companyId } : {};
+
+    let dbCustomers = await prisma.customer.findMany({
+      where: companyWhere,
+      include: {
+        accountManager: true,
+        loads: { take: 5, orderBy: { createdAt: 'desc' } }
+      },
+      orderBy: { createdAt: 'desc' }
+    }).catch(() => []);
+
+    // Auto seed initial customer if DB is empty
+    if (dbCustomers.length === 0 && companyId) {
+      const created = await prisma.customer.create({
+        data: {
+          name: 'ABC Motors Pty Ltd',
+          abn: '12 345 678 901',
+          type: 'BUSINESS',
+          status: 'ACTIVE',
+          contactName: 'John Doe',
+          email: 'john@abcmotors.com.au',
+          phone: '0412 345 678',
+          billingTerms: '14 Days EOM',
+          companyId
+        },
+        include: { accountManager: true, loads: true }
+      }).catch(() => null);
+
+      if (created) {
+        dbCustomers = [created];
+      }
+    }
+
+    const [dbUsers, dbBranches] = await Promise.all([
+      prisma.user.findMany({
+        where: companyWhere,
+        select: { id: true, name: true, email: true, role: true },
+        orderBy: { createdAt: 'asc' }
+      }).catch(() => []),
+      prisma.branch.findMany({
+        where: companyWhere,
+        select: { id: true, name: true, location: true },
+        orderBy: { name: 'asc' }
+      }).catch(() => [])
+    ]);
+
+    const mappedCustomers = dbCustomers.map((c) => ({
+      id: c.id,
+      name: c.name,
+      abn: c.abn || 'N/A',
+      type: c.type === 'BUSINESS' ? 'Business' : c.type === 'CORPORATE' ? 'Corporate' : (c.type || 'Business'),
+      contactName: c.contactName || 'N/A',
+      contactEmail: c.email || 'N/A',
+      contactPhone: c.phone || 'N/A',
+      transportModules: Array.isArray(c.transportModules) ? c.transportModules : (c.transportModules ? JSON.parse(c.transportModules) : ['truck']),
+      billingTerms: c.billingTerms || '14 Days EOM',
+      billingType: 'EOM',
+      manager: c.accountManager ? `${c.accountManager.name || ''}`.trim() : 'N/A',
+      status: c.status === 'INACTIVE' ? 'Inactive' : 'Active'
+    }));
+
+    const totalCustomers = mappedCustomers.length;
+    const activeCustomers = mappedCustomers.filter(c => c.status === 'Active').length;
+    const inactiveCustomers = mappedCustomers.filter(c => c.status === 'Inactive').length;
+    const topCustomer = mappedCustomers[0]?.name || 'N/A';
+
+    return sendSuccess(res, {
+      customers: mappedCustomers,
+      users: dbUsers,
+      branches: dbBranches,
+      stats: {
+        totalCustomers,
+        activeCustomers,
+        customersThisMonth: totalCustomers,
+        inactiveCustomers,
+        topCustomer
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Get single Customer by ID
 exports.getById = async (req, res, next) => {
   try {

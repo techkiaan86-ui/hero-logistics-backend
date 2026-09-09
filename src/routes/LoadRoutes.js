@@ -11,6 +11,9 @@ router.route('/')
   .get(LoadController.getAll)
   .post(LoadController.create);
 
+router.get('/planning-board', LoadController.getPlanningBoard);
+router.get('/active', LoadController.getActiveLoads);
+
 router.route('/:id')
   .get(LoadController.getById)
   .put(LoadController.update)

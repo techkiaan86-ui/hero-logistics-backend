@@ -4,6 +4,8 @@ const CustomerController = require('../controllers/CustomerController');
 const { verifyToken } = require('../middlewares/auth');
 const { resolveTenant } = require('../middlewares/tenantResolver');
 
+router.get('/portal', CustomerController.getPortalData);
+
 router.use(verifyToken, resolveTenant);
 
 router.route('/')

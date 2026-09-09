@@ -293,25 +293,24 @@ exports.deleteLoad = async (req, res, next) => {
   try {
     const { id } = req.params;
     
-    // Find target load by ID, loadRef, loadNumber, or referenceNumber
+    // Find target load by ID, loadRef, or draftId
     const targetLoad = await prisma.load.findFirst({
-      where: { OR: [{ id }, { loadRef: id }, { loadNumber: id }, { referenceNumber: id }] }
+      where: { OR: [{ id }, { loadRef: id }, { draftId: id }] }
     }).catch(() => null);
 
     const targetId = targetLoad ? targetLoad.id : id;
 
     // Cascade clean-up of child records to maintain foreign key integrity
-    await prisma.customerInvoice.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.preStartChecklist.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.telemetryLog.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.timesheet.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.routeStop.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.loadItem.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.loadExpense.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.loadDocument.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.document.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.loadActivity.deleteMany({ where: { loadId: targetId } }).catch(() => null);
-    await prisma.message.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.preStartChecklist) await prisma.preStartChecklist.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.telemetryLog) await prisma.telemetryLog.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.timesheet) await prisma.timesheet.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.routeStop) await prisma.routeStop.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.loadItem) await prisma.loadItem.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.loadExpense) await prisma.loadExpense.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.document) await prisma.document.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.loadActivity) await prisma.loadActivity.deleteMany({ where: { loadId: targetId } }).catch(() => null);
+    if (prisma.message) await prisma.message.deleteMany({ where: { loadId: targetId } }).catch(() => null);
 
     await prisma.load.delete({ where: { id: targetId } }).catch(err => {
       console.warn('Load deletion notice:', err?.message);
@@ -681,19 +680,38 @@ exports.getLiveTracking = async (req, res, next) => {
     const companyId = await resolveCompanyId(req);
     const whereScope = companyId ? { companyId } : {};
 
-    // Fetch all trucks (category TRUCK only for live tracking)
-    const vehicles = await prisma.vehicle.findMany({
-      where: { ...whereScope, category: 'TRUCK' },
-      include: {
-        currentDriver: {
-          select: {
-            id: true, firstName: true, lastName: true,
-            phone: true, driverCode: true, avatarUrl: true, status: true
+    // Fetch all trucks, drivers, loads, branches in parallel
+    const [vehicles, drivers, loads, branches, totalDelivered, onTimeDelivered] = await Promise.all([
+      prisma.vehicle.findMany({
+        where: { ...whereScope, category: 'TRUCK' },
+        include: {
+          currentDriver: {
+            select: {
+              id: true, firstName: true, lastName: true,
+              phone: true, driverCode: true, avatarUrl: true, status: true
+            }
           }
-        }
-      },
-      orderBy: { createdAt: 'asc' }
-    });
+        },
+        orderBy: { createdAt: 'asc' }
+      }).catch(() => []),
+      prisma.driver.findMany({
+        where: whereScope,
+        include: { currentVehicle: true, branch: true },
+        orderBy: { createdAt: 'asc' }
+      }).catch(() => []),
+      prisma.load.findMany({
+        where: whereScope,
+        include: { customer: true, driver: true, truck: true, stops: true },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => []),
+      prisma.branch.findMany({
+        where: whereScope,
+        select: { id: true, name: true, location: true },
+        orderBy: { name: 'asc' }
+      }).catch(() => []),
+      prisma.load.count({ where: { ...whereScope, status: 'DELIVERED' } }).catch(() => 0),
+      prisma.load.count({ where: { ...whereScope, status: 'DELIVERED', priority: { not: 'URGENT' } } }).catch(() => 0)
+    ]);
 
     // Fetch latest telemetry for each vehicle
     const vehicleIds = vehicles.map(v => v.id);
@@ -701,7 +719,7 @@ exports.getLiveTracking = async (req, res, next) => {
       where: { vehicleId: { in: vehicleIds } },
       orderBy: { timestamp: 'desc' },
       distinct: ['vehicleId']
-    });
+    }).catch(() => []);
 
     // Map telemetry by vehicleId
     const telemetryMap = {};
@@ -710,7 +728,6 @@ exports.getLiveTracking = async (req, res, next) => {
     // Merge vehicle data with latest telemetry
     const enrichedVehicles = vehicles.map((v, index) => {
       const tel = telemetryMap[v.id];
-      // Fallback coordinates in Sydney/Melbourne area if no telemetry exists
       const fallbackLat = -33.8688 - (index * 0.12);
       const fallbackLng = 151.2093 + (index * 0.08);
       return {
@@ -733,11 +750,6 @@ exports.getLiveTracking = async (req, res, next) => {
       ? Math.round(inTransitVehicles.reduce((sum, v) => sum + (v.speedKmh || 0), 0) / inTransitVehicles.length)
       : 0;
 
-    // Fetch active loads for on-time rate
-    const [totalDelivered, onTimeDelivered] = await Promise.all([
-      prisma.load.count({ where: { ...whereScope, status: 'DELIVERED' } }),
-      prisma.load.count({ where: { ...whereScope, status: 'DELIVERED', priority: { not: 'URGENT' } } })
-    ]);
     const onTimeRate = totalDelivered > 0 ? Math.round((onTimeDelivered / totalDelivered) * 1000) / 10 : 100;
 
     return sendSuccess(res, {
@@ -749,7 +761,10 @@ exports.getLiveTracking = async (req, res, next) => {
         avgFleetSpeedKmh: avgFleetSpeed,
         onTimeRate
       },
-      vehicles: enrichedVehicles
+      vehicles: enrichedVehicles,
+      drivers,
+      loads,
+      branches
     });
   } catch (error) { next(error); }
 };

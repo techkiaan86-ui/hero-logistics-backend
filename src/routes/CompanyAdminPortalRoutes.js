@@ -163,6 +163,8 @@ router.get('/delivery-issues', ctrl.getDeliveryIssues);
 router.put('/delivery-issues/:id/status', ctrl.updateDeliveryIssueStatus);
 
 // 20. Customers
+const CustomerController = require('../controllers/CustomerController');
+router.get('/customers-portal', CustomerController.getPortalData);
 router.get('/customers', ctrl.getCustomers);
 router.delete('/customers/:id', ctrl.deleteCustomer);
 
