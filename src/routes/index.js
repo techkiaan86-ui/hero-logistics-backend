@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 
+/* ============================================================
+   ROUTE MODULE IMPORTS
+   ============================================================ */
 const UserRoutes = require('./UserRoutes');
 const CompanyRoutes = require('./CompanyRoutes');
 const SubscriptionPlanRoutes = require('./SubscriptionPlanRoutes');
@@ -95,7 +98,20 @@ const PaymentGatewayConfigRoutes = require('./PaymentGatewayConfigRoutes');
 const WorkflowRuleRoutes = require('./WorkflowRuleRoutes');
 const UploadRoutes = require('./UploadRoutes');
 const DriverPortalRoutes = require('./DriverPortalRoutes');
+const CompanyAdminDashboardRoutes = require('./CompanyAdminDashboardRoutes');
+const CompanyAdminPortalRoutes = require('./CompanyAdminPortalRoutes');
+const AiModelRoutes = require('./AiModelRoutes');
+const NotificationTemplateRoutes = require('./NotificationTemplateRoutes');
+const NotificationRuleRoutes = require('./NotificationRuleRoutes');
+const RecipientGroupRoutes = require('./RecipientGroupRoutes');
+const WarehousePortalRoutes = require('./WarehousePortalRoutes');
+const RegionalTerminalRoutes = require('./RegionalTerminalRoutes');
+const AccountsPortalRoutes = require('./AccountsPortalRoutes');
+const SalesSettingsRoutes = require('./SalesSettingsRoutes');
 
+/* ============================================================
+   ROUTE MOUNTING & ALIASES
+   ============================================================ */
 router.use('/upload', UploadRoutes);
 router.use('/driver-portal', DriverPortalRoutes);
 router.use('/auth', authRoutes);
@@ -190,46 +206,42 @@ router.use('/driver-pay-rates', DriverPayRateRoutes);
 router.use('/driver-activities', DriverActivityRoutes);
 router.use('/driver-messages', DriverMessageRoutes);
 router.use('/driver-super-info', DriverSuperInfoRoutes);
-const CompanyAdminDashboardRoutes = require('./CompanyAdminDashboardRoutes');
-const CompanyAdminPortalRoutes = require('./CompanyAdminPortalRoutes');
-const AiModelRoutes = require('./AiModelRoutes');
-const NotificationTemplateRoutes = require('./NotificationTemplateRoutes');
-const NotificationRuleRoutes = require('./NotificationRuleRoutes');
-const RecipientGroupRoutes = require('./RecipientGroupRoutes');
 
-const WarehousePortalRoutes = require('./WarehousePortalRoutes');
-const RegionalTerminalRoutes = require('./RegionalTerminalRoutes');
-
+// AI & Notifications
 router.use('/ai-models', AiModelRoutes);
 router.use('/notification-templates', NotificationTemplateRoutes);
 router.use('/notification-rules', NotificationRuleRoutes);
 router.use('/recipient-groups', RecipientGroupRoutes);
+
+// Terminals
 router.use('/terminals', RegionalTerminalRoutes);
 router.use('/regional-terminals', RegionalTerminalRoutes);
 
+// Portal Routes & Super Admin
 router.use('/company-admin', CompanyAdminPortalRoutes);
 router.use('/company-admin/dashboard', CompanyAdminDashboardRoutes);
 router.use('/super-admin/dashboard', SuperAdminDashboardRoutes);
+router.use('/super-admin/system-analytics', SuperAdminDashboardRoutes);
+router.use('/super-admin/analytics', SuperAdminDashboardRoutes);
+router.use('/admin/system-analytics', SuperAdminDashboardRoutes);
+router.use('/system-analytics', SuperAdminDashboardRoutes);
 router.use('/super-admin/settings', PlatformSettingRoutes);
 router.use('/platform-settings', PlatformSettingRoutes);
 router.use('/payment-gateway-config', PaymentGatewayConfigRoutes);
 router.use('/dashboard-metrics', SuperAdminDashboardRoutes);
 
-// Warehouse Portal routes & aliases
+// Warehouse Portal
 router.use('/warehouse-portal', WarehousePortalRoutes);
 
-// Accounts Portal dedicated routes
-const AccountsPortalRoutes = require('./AccountsPortalRoutes');
+// Accounts Portal
 router.use('/accounts', AccountsPortalRoutes);
 router.use('/accounts-portal', AccountsPortalRoutes);
 
-// Direct menu aliases for top-level routes
+// Top-Level Aliases
 router.use('/live-tracking', CompanyAdminPortalRoutes);
 router.use('/pricing', CompanyAdminPortalRoutes);
 router.use('/payroll', CompanyAdminPortalRoutes);
-const SalesSettingsRoutes = require('./SalesSettingsRoutes');
 router.use('/sales-settings', SalesSettingsRoutes);
 router.use('/sales/settings', SalesSettingsRoutes);
 
 module.exports = router;
-
