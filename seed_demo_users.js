@@ -5,6 +5,7 @@ async function main() {
   const password = await bcrypt.hash('123456', 10);
   
   const roles = [
+    { email: 'super-admin@hero.com', role: 'SUPER_ADMIN' },
     { email: 'admin@hero.com', role: 'SUPER_ADMIN' },
     { email: 'company-admin@hero.com', role: 'COMPANY_ADMIN' },
     { email: 'sales@hero.com', role: 'SALES' },

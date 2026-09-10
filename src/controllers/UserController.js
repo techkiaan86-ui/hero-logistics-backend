@@ -170,7 +170,7 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, email, password, role, phone, status, companyId } = req.body;
+    const { name, email, password, role, phone, status, companyId, dob, address, emergencyContact } = req.body;
 
     if (req.tenantId) {
       const existingUser = await prisma.user.findFirst({

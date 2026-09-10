@@ -6,6 +6,7 @@ const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 // Role hierarchy — lower rank = higher authority.
 // Company Admin can only edit roles with rank > their own.
 const ROLE_HIERARCHY = {
+  SUPER_ADMIN: 0,
   COMPANY_ADMIN: 1,
   SALES: 2,
   DISPATCHER: 3,
@@ -32,11 +33,11 @@ const formatRolePermissions = (role) => {
   return { ...role, permissions: permObj };
 };
 
-// Get all CustomRoles — always return the 8 system roles as source of truth.
+// Get all CustomRoles — always return the 9 system roles as source of truth.
 // Company Admin sees same roles with parentPermissions and company overrides merged.
 exports.getAll = async (req, res, next) => {
   try {
-    // Always load the 8 global system roles first
+    // Always load the 9 global system roles first
     const systemRoles = await prisma.customRole.findMany({
       where: { isSystem: true, companyId: null },
       include: { permissions: true },
@@ -127,7 +128,7 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   return sendError(res, {
     code: 'FORBIDDEN',
-    message: 'System roles are fixed and cannot be created. Only the 8 predefined system roles exist.'
+    message: 'System roles are fixed and cannot be created. Only the 9 predefined system roles exist.'
   }, 403);
 };
 
