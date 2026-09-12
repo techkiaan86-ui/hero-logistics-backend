@@ -160,6 +160,14 @@ exports.create = async (req, res, next) => {
       }
     });
 
+    await prisma.auditLog.create({
+      data: {
+        action: `SYSTEM::New workspace registered: ${cleanName} (${generatedTenantId})`,
+        operator: 'System Registration',
+        companyId: company.id
+      }
+    });
+
     // 2. Create the Workspace Manager (User) if credentials are provided
     if (cleanEmail && hashedPassword) {
       try {
@@ -208,6 +216,14 @@ exports.create = async (req, res, next) => {
               periodStart: new Date(),
               periodEnd: new Date(new Date().setMonth(new Date().getMonth() + 1)),
               dueDate: new Date(new Date().setDate(new Date().getDate() + 7))
+            }
+          });
+
+          await prisma.auditLog.create({
+            data: {
+              action: `BILLING::Plan subscribed: ${plan.name} at $${plan.monthlyPrice}/mo for ${cleanName}`,
+              operator: 'Billing System',
+              companyId: company.id
             }
           });
         } catch (subErr) {
