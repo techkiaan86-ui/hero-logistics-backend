@@ -5,7 +5,7 @@ const { getTenantWhere } = require('../middlewares/tenantResolver');
 exports.getDashboardMetrics = async (req, res, next) => {
   try {
     const tenantFilter = getTenantWhere(req);
-    const companyId = req.tenantId;
+    const companyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
 
     // If companyId is not available, attempt to grab first active company (for dev/demo context)
     let effectiveCompanyId = companyId;
@@ -31,9 +31,9 @@ exports.getDashboardMetrics = async (req, res, next) => {
       openTicketsCount
     ] = await Promise.all([
       prisma.load.count({ where: whereScope }),
-      prisma.load.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'ASSIGNED', 'PLANNED'] } } }),
+      prisma.load.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'ACTIVE', 'ASSIGNED', 'PLANNED'] } } }),
       prisma.driver.count({ where: whereScope }),
-      prisma.vehicle.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'IDLE'] } } }),
+      prisma.vehicle.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'IDLE', 'ACTIVE'] } } }),
       prisma.branch.count({ where: whereScope }),
       prisma.warehouse.count({ where: warehouseScope }),
       prisma.customer.count({ where: whereScope }),
@@ -41,16 +41,18 @@ exports.getDashboardMetrics = async (req, res, next) => {
     ]);
 
     // 2. Load Status breakdown (MTD)
-    const [draftLoads, assignedLoads, inTransitLoads, deliveredLoads, cancelledLoads] = await Promise.all([
-      prisma.load.count({ where: { ...whereScope, status: 'DRAFT' } }),
+    const [draftLoads, plannedLoads, assignedLoads, inTransitLoads, deliveredLoads, cancelledLoads] = await Promise.all([
+      prisma.load.count({ where: { ...whereScope, status: { in: ['DRAFT', 'REQUESTED'] } } }),
+      prisma.load.count({ where: { ...whereScope, status: 'PLANNED' } }),
       prisma.load.count({ where: { ...whereScope, status: 'ASSIGNED' } }),
-      prisma.load.count({ where: { ...whereScope, status: 'IN_TRANSIT' } }),
-      prisma.load.count({ where: { ...whereScope, status: 'DELIVERED' } }),
+      prisma.load.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'ACTIVE'] } } }),
+      prisma.load.count({ where: { ...whereScope, status: { in: ['DELIVERED', 'COMPLETED'] } } }),
       prisma.load.count({ where: { ...whereScope, status: 'CANCELLED' } })
     ]);
 
     const loadStatusData = [
       { name: 'Draft', value: draftLoads, color: '#94A3B8' },
+      { name: 'Planned', value: plannedLoads, color: '#6366F1' },
       { name: 'Assigned', value: assignedLoads, color: '#3B82F6' },
       { name: 'In Transit', value: inTransitLoads, color: '#0EA5E9' },
       { name: 'Delivered', value: deliveredLoads, color: '#10B981' },

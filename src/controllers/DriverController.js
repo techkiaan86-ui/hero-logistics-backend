@@ -143,6 +143,9 @@ exports.create = async (req, res, next) => {
       inputCode = `DRV-${Math.floor(100000 + Math.random() * 900000)}`;
     }
 
+    const lType = payload.licenceType || payload.licenseType || payload.LicenceType || null;
+    const lNum = payload.licenceNumber || payload.licenseNumber || payload.LicenceNumber || null;
+
     const driverData = {
       firstName: payload.firstName || payload.FirstName || null,
       lastName: payload.lastName || payload.LastName || null,
@@ -150,20 +153,31 @@ exports.create = async (req, res, next) => {
       email: inputEmail,
       avatarUrl: cleanAvatarUrl(rawAvatar),
       driverCode: inputCode,
-      licenseType: payload.licenceType || payload.licenseType || 'HR (Heavy Rigid)',
-      licenseNumber: payload.licenceNumber || payload.licenseNumber || `LIC-${Math.floor(10000 + Math.random() * 90000)}`,
+      licenseType: lType,
+      licenseNumber: lNum,
       status: validStatus,
       role: payload.role || payload.driverRole || 'Driver',
-      category: payload.category || payload.driverCategory || 'Heavy Rig',
-      shift: payload.shift || 'Morning',
+      category: payload.category || payload.driverCategory || null,
+      shift: payload.shift || null,
       notes: payload.notes || null,
+      address: payload.address || payload.StreetAddress || null,
       companyId: effectiveCompanyId,
       branchId: branchIdVal
     };
 
-    if (payload.dob) {
-      const d = new Date(payload.dob);
-      if (!isNaN(d.getTime())) driverData.joiningDate = d;
+    if (payload.dob || payload.DateofBirth) {
+      const d = new Date(payload.dob || payload.DateofBirth);
+      if (!isNaN(d.getTime())) {
+        driverData.dob = d;
+        driverData.joiningDate = d;
+      }
+    }
+
+    if (payload.employmentType || payload.EmploymentType) {
+      const e = String(payload.employmentType || payload.EmploymentType).toUpperCase().replace(/\s+/g, '_');
+      if (['FULL_TIME', 'PART_TIME', 'CASUAL', 'CONTRACTOR'].includes(e)) {
+        driverData.employmentType = e;
+      }
     }
 
     try {
@@ -229,11 +243,15 @@ const sanitizeDriverPayload = (rawPayload) => {
     }
   }
 
-  if (rawPayload.employmentType) {
-    const e = String(rawPayload.employmentType).toUpperCase().replace(/\s+/g, '_');
+  if (rawPayload.employmentType || rawPayload.EmploymentType) {
+    const e = String(rawPayload.employmentType || rawPayload.EmploymentType).toUpperCase().replace(/\s+/g, '_');
     if (['FULL_TIME', 'PART_TIME', 'CASUAL', 'CONTRACTOR'].includes(e)) {
       data.employmentType = e;
     }
+  }
+
+  if (rawPayload.address || rawPayload.StreetAddress) {
+    data.address = rawPayload.address || rawPayload.StreetAddress || null;
   }
 
   if (rawPayload.role !== undefined) data.role = rawPayload.role;
@@ -242,8 +260,8 @@ const sanitizeDriverPayload = (rawPayload) => {
   if (rawPayload.notes !== undefined) data.notes = rawPayload.notes;
   if (rawPayload.branchId !== undefined) data.branchId = rawPayload.branchId;
 
-  if (rawPayload.dob) {
-    const d = new Date(rawPayload.dob);
+  if (rawPayload.dob || rawPayload.DateofBirth) {
+    const d = new Date(rawPayload.dob || rawPayload.DateofBirth);
     if (!isNaN(d.getTime())) data.dob = d;
   }
 
@@ -274,6 +292,25 @@ exports.update = async (req, res, next) => {
         }
       }
     }
+
+    // Check for duplicate driverCode and email before updating
+    if (updateData.driverCode) {
+      const duplicateCode = await prisma.driver.findFirst({
+        where: { driverCode: updateData.driverCode, NOT: { id } }
+      });
+      if (duplicateCode) {
+        delete updateData.driverCode;
+      }
+    }
+
+    if (updateData.email) {
+      const duplicateEmail = await prisma.driver.findFirst({
+        where: { email: updateData.email, NOT: { id } }
+      });
+      if (duplicateEmail) {
+        delete updateData.email;
+      }
+    }
     
     const where = { id };
 
@@ -291,11 +328,22 @@ exports.update = async (req, res, next) => {
       return sendSuccess(res, data);
     } catch (e) {
       if (e.code === 'P2002') {
-        const target = Array.isArray(e.meta?.target) ? e.meta.target.join(', ') : (e.meta?.target || 'field');
-        return sendError(res, {
-          code: ERROR_CODES.VALIDATION_ERROR,
-          message: `A driver with this ${target} already exists.`
-        }, HTTP_STATUS.BAD_REQUEST);
+        // Fallback retry without conflicting unique fields
+        delete updateData.driverCode;
+        delete updateData.email;
+        try {
+          const fallbackData = await prisma.driver.update({
+            where,
+            data: updateData
+          });
+          return sendSuccess(res, fallbackData);
+        } catch (retryErr) {
+          const target = Array.isArray(e.meta?.target) ? e.meta.target.join(', ') : (e.meta?.target || 'field');
+          return sendError(res, {
+            code: ERROR_CODES.VALIDATION_ERROR,
+            message: `A driver with this ${target} already exists.`
+          }, HTTP_STATUS.BAD_REQUEST);
+        }
       }
       if (e.code === 'P2025') {
         if (ifMatch) {

@@ -19,8 +19,8 @@ module.exports = {
   },
   DEFAULT_PAGINATION: {
     PAGE: 1,
-    PAGE_SIZE: 20,
-    MAX_PAGE_SIZE: 100
+    PAGE_SIZE: 100,
+    MAX_PAGE_SIZE: 10000
   },
   ERROR_CODES: {
     RESOURCE_CONFLICT: 'RESOURCE_CONFLICT',
