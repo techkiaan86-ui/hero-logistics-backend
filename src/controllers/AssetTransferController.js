@@ -13,7 +13,12 @@ exports.getAll = async (req, res, next) => {
 
     const [data, total] = await Promise.all([
       prisma.assetTransfer.findMany({
-        where, skip, take, orderBy
+        where, skip, take, orderBy,
+        include: {
+          asset: { select: { name: true, sku: true } },
+          fromCompany: { select: { name: true } },
+          toCompany: { select: { name: true } }
+        }
       }),
       prisma.assetTransfer.count({ where })
     ]);

@@ -28,6 +28,9 @@ exports.getAll = async (req, res, next) => {
           dotNumber: true,
           taxId: true,
           adminEmail: true,
+          canSendTransfers: true,
+          canReceiveTransfers: true,
+          autoApproveTransfers: true,
           createdAt: true,
           updatedAt: true,
           _count: {
