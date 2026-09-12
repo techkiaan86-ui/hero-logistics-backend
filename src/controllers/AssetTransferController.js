@@ -17,7 +17,7 @@ exports.getAll = async (req, res, next) => {
         include: {
           senderCompany: { select: { name: true } },
           receiverCompany: { select: { name: true } },
-          auditTrails: { orderBy: { createdAt: 'asc' } }
+          auditTrails: { orderBy: { timestamp: 'asc' } }
         }
       }),
       prisma.assetTransfer.count({ where })
