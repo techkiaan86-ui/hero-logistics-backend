@@ -230,11 +230,41 @@ const sanitizeDriverPayload = (rawPayload) => {
     data.email = em ? em : null;
   }
 
+  if (rawPayload.gender !== undefined || rawPayload.Gender !== undefined) data.gender = rawPayload.gender || rawPayload.Gender || null;
+  if (rawPayload.nationality !== undefined || rawPayload.Nationality !== undefined) data.nationality = rawPayload.nationality || rawPayload.Nationality || null;
+  if (rawPayload.emergencyContact !== undefined || rawPayload.EmergencyContactName !== undefined) {
+    const name = rawPayload.EmergencyContactName || '';
+    const num = rawPayload.EmergencyContactNumber || '';
+    data.emergencyContact = rawPayload.emergencyContact || `${name} ${num}`.trim() || null;
+  }
+  if (rawPayload.address !== undefined || rawPayload.ResidentialAddress !== undefined) {
+    data.address = rawPayload.address || rawPayload.ResidentialAddress || null;
+  }
+  if (rawPayload.city !== undefined || rawPayload.City !== undefined) data.city = rawPayload.city || rawPayload.City || null;
+  if (rawPayload.state !== undefined || rawPayload.State !== undefined) data.state = rawPayload.state || rawPayload.State || null;
+  if (rawPayload.postalCode !== undefined || rawPayload.PostalCode !== undefined) data.postalCode = rawPayload.postalCode || rawPayload.PostalCode || null;
+
   const lType = rawPayload.licenseType || rawPayload.licenceType || rawPayload.LicenceType;
   if (lType !== undefined) data.licenseType = lType;
 
   const lNum = rawPayload.licenseNumber || rawPayload.licenceNumber || rawPayload.LicenceNumber;
   if (lNum !== undefined) data.licenseNumber = lNum;
+
+  const lState = rawPayload.licenseState || rawPayload.licenceState || rawPayload.LicenceState;
+  if (lState !== undefined) data.licenseState = lState;
+
+  const lClass = rawPayload.licenseClass || rawPayload.licenceClass || rawPayload.LicenceClass;
+  if (lClass !== undefined) data.licenseClass = lClass;
+
+  if (rawPayload.licenseIssueDate || rawPayload.IssueDate) {
+    const d = new Date(rawPayload.licenseIssueDate || rawPayload.IssueDate);
+    if (!isNaN(d.getTime())) data.licenseIssueDate = d;
+  }
+
+  if (rawPayload.licenseExpiry || rawPayload.ExpiryDate) {
+    const d = new Date(rawPayload.licenseExpiry || rawPayload.ExpiryDate);
+    if (!isNaN(d.getTime())) data.licenseExpiry = d;
+  }
 
   if (rawPayload.status) {
     const s = String(rawPayload.status).toUpperCase().replace(/\s+/g, '_');
@@ -250,15 +280,36 @@ const sanitizeDriverPayload = (rawPayload) => {
     }
   }
 
-  if (rawPayload.address || rawPayload.StreetAddress) {
-    data.address = rawPayload.address || rawPayload.StreetAddress || null;
-  }
-
-  if (rawPayload.role !== undefined) data.role = rawPayload.role;
-  if (rawPayload.category !== undefined) data.category = rawPayload.category;
-  if (rawPayload.shift !== undefined) data.shift = rawPayload.shift;
+  if (rawPayload.role !== undefined || rawPayload.DriverRole !== undefined) data.role = rawPayload.role || rawPayload.DriverRole || null;
+  if (rawPayload.category !== undefined || rawPayload.DriverCategory !== undefined) data.category = rawPayload.category || rawPayload.DriverCategory || null;
+  if (rawPayload.shift !== undefined || rawPayload.Shift !== undefined) data.shift = rawPayload.shift || rawPayload.Shift || null;
   if (rawPayload.notes !== undefined) data.notes = rawPayload.notes;
   if (rawPayload.branchId !== undefined) data.branchId = rawPayload.branchId;
+
+  if (rawPayload.payType !== undefined || rawPayload.PayType !== undefined) data.payType = rawPayload.payType || rawPayload.PayType || null;
+  if (rawPayload.payRate !== undefined || rawPayload.PayRate !== undefined) {
+    const pr = parseFloat(rawPayload.payRate || rawPayload.PayRate);
+    data.payRate = !isNaN(pr) ? pr : null;
+  }
+  if (rawPayload.bankName !== undefined || rawPayload.BankName !== undefined) data.bankName = rawPayload.bankName || rawPayload.BankName || null;
+  if (rawPayload.accountNumber !== undefined || rawPayload.AccountNumber !== undefined) data.accountNumber = rawPayload.accountNumber || rawPayload.AccountNumber || null;
+  if (rawPayload.routingNumber !== undefined || rawPayload.BSBRouting !== undefined) data.routingNumber = rawPayload.routingNumber || rawPayload.BSBRouting || null;
+  if (rawPayload.taxNumber !== undefined || rawPayload.TaxNumber !== undefined) data.taxNumber = rawPayload.taxNumber || rawPayload.TaxNumber || null;
+  if (rawPayload.superFund !== undefined || rawPayload.SuperannuationFund !== undefined) data.superFund = rawPayload.superFund || rawPayload.SuperannuationFund || null;
+
+  if (rawPayload.preferredVehicle !== undefined || rawPayload.PreferredVehicle !== undefined) data.preferredVehicle = rawPayload.preferredVehicle || rawPayload.PreferredVehicle || null;
+  if (rawPayload.preferredRoutes !== undefined || rawPayload.PreferredRoutes !== undefined) data.preferredRoutes = rawPayload.preferredRoutes || rawPayload.PreferredRoutes || null;
+  if (rawPayload.preferredRegions !== undefined || rawPayload.PreferredRegions !== undefined) data.preferredRegions = rawPayload.preferredRegions || rawPayload.PreferredRegions || null;
+  if (rawPayload.maxDistPerTripKm !== undefined || rawPayload.MaximumDistancePerTripKM !== undefined) {
+    const md = parseInt(rawPayload.maxDistPerTripKm || rawPayload.MaximumDistancePerTripKM, 10);
+    data.maxDistPerTripKm = !isNaN(md) ? md : null;
+  }
+  if (rawPayload.dgCertified !== undefined || rawPayload.DangerousGoodsCertified !== undefined) {
+    data.dgCertified = rawPayload.dgCertified === true || rawPayload.DangerousGoodsCertified === 'Yes';
+  }
+  if (rawPayload.hvCertified !== undefined || rawPayload.HeavyVehicleCertified !== undefined) {
+    data.hvCertified = rawPayload.hvCertified === true || rawPayload.HeavyVehicleCertified === 'Yes';
+  }
 
   if (rawPayload.dob || rawPayload.DateofBirth) {
     const d = new Date(rawPayload.dob || rawPayload.DateofBirth);
