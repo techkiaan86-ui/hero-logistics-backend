@@ -2675,7 +2675,7 @@ model PrintSpoolerJob {
 model Document {
   id         String    @id @default(uuid())
   type       String
-  fileUrl    String
+  fileUrl    String    @db.LongText
   expiryDate DateTime?
 
   driverId String?
