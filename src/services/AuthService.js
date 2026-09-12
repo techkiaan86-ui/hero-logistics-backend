@@ -127,6 +127,14 @@ class AuthService {
       }).catch(() => {});
     }
 
+    // Update lastLogin for company if applicable
+    if (user.companyId && prisma.company) {
+      await prisma.company.update({
+        where: { id: user.companyId },
+        data: { lastLogin: new Date() }
+      }).catch(() => {});
+    }
+
     // Resolve permissions with parent-child hierarchy
     const roleSlug = user.customRole?.slug || user.role;
     let masterPerms = {};
