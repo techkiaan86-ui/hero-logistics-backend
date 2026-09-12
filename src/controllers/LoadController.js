@@ -218,10 +218,10 @@ exports.create = async (req, res, next) => {
     // Clean up frontend only parameters that are not in schema
     delete payload.pickupLocation;
     delete payload.deliveryLocation;
-    delete payload.customerName;
-    delete payload.driverName;
-    delete payload.vehicleId;
-    delete payload.trailerId;
+    delete payload.driver;
+    delete payload.truck;
+    delete payload.customer;
+    delete payload.trailer;
 
     const data = await prisma.load.create({
       data: payload,
