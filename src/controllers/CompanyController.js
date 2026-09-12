@@ -22,6 +22,7 @@ exports.getAll = async (req, res, next) => {
           trialExpiry: true,
           lastLogin: true,
           accountManager: true,
+          country: true,
           storageUsedGB: true,
           registrationNumber: true,
           dotNumber: true,
@@ -89,6 +90,7 @@ exports.create = async (req, res, next) => {
       adminPassword,
       status,
       accountManager,
+      country,
       trialExpiry,
       planTier
     } = req.body;
@@ -149,6 +151,7 @@ exports.create = async (req, res, next) => {
         tenantId: generatedTenantId,
         status: status || 'ACTIVE',
         accountManager: cleanAccountManager,
+        country: country ? String(country).trim() : null,
         trialExpiry: trialExpiry ? new Date(trialExpiry) : null,
         adminEmail: cleanEmail
       }

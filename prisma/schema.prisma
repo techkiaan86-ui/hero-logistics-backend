@@ -563,6 +563,7 @@ model Company {
   trialExpiry    DateTime?
   lastLogin      DateTime?
   accountManager String?
+  country        String?
   storageUsedGB  Float         @default(0)
 
   registrationNumber String?
