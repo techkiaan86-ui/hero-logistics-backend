@@ -111,11 +111,26 @@ exports.create = async (req, res, next) => {
     let branchIdVal = payload.branchId || null;
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       branchIdVal = req.user.branchId;
+    } else if (!branchIdVal && (payload.branch || payload.Branch)) {
+      const bName = String(payload.branch || payload.Branch).trim();
+      if (bName && bName !== '—') {
+        const foundBranch = await prisma.branch.findFirst({
+          where: { name: { equals: bName }, companyId: effectiveCompanyId }
+        }).catch(() => null);
+        if (foundBranch) {
+          branchIdVal = foundBranch.id;
+        } else {
+          const createdBranch = await prisma.branch.create({
+            data: { name: bName, companyId: effectiveCompanyId }
+          }).catch(() => null);
+          if (createdBranch) branchIdVal = createdBranch.id;
+        }
+      }
     }
 
     let validStatus = 'AVAILABLE';
-    if (payload.status) {
-      const s = String(payload.status).toUpperCase().replace(/\s+/g, '_');
+    if (payload.status || payload.DriverStatus) {
+      const s = String(payload.status || payload.DriverStatus).toUpperCase().replace(/\s+/g, '_');
       if (['ON_DUTY', 'OFF_DUTY', 'ON_LEAVE', 'UNAVAILABLE', 'AVAILABLE'].includes(s)) {
         validStatus = s;
       }
@@ -145,6 +160,24 @@ exports.create = async (req, res, next) => {
 
     const lType = payload.licenceType || payload.licenseType || payload.LicenceType || null;
     const lNum = payload.licenceNumber || payload.licenseNumber || payload.LicenceNumber || null;
+    const lState = payload.licenseState || payload.licenceState || payload.LicenceState || null;
+    const lClass = payload.licenseClass || payload.licenceClass || payload.LicenceClass || null;
+
+    let issueDateObj = null;
+    if (payload.licenseIssueDate || payload.IssueDate) {
+      const d = new Date(payload.licenseIssueDate || payload.IssueDate);
+      if (!isNaN(d.getTime())) issueDateObj = d;
+    }
+
+    let expiryDateObj = null;
+    if (payload.licenseExpiry || payload.ExpiryDate) {
+      const d = new Date(payload.licenseExpiry || payload.ExpiryDate);
+      if (!isNaN(d.getTime())) expiryDateObj = d;
+    }
+
+    const emergencyName = payload.EmergencyContactName || payload.emergencyContactName || '';
+    const emergencyNum = payload.EmergencyContactNumber || payload.emergencyContactPhone || '';
+    const emergencyCombined = payload.emergencyContact || (emergencyName ? `${emergencyName} ${emergencyNum}`.trim() : emergencyNum) || null;
 
     const driverData = {
       firstName: payload.firstName || payload.FirstName || null,
@@ -155,12 +188,22 @@ exports.create = async (req, res, next) => {
       driverCode: inputCode,
       licenseType: lType,
       licenseNumber: lNum,
+      licenseState: lState,
+      licenseClass: lClass,
+      licenseIssueDate: issueDateObj,
+      licenseExpiry: expiryDateObj,
+      gender: payload.gender || payload.Gender || null,
+      nationality: payload.nationality || payload.Nationality || null,
+      emergencyContact: emergencyCombined,
       status: validStatus,
       role: payload.role || payload.driverRole || 'Driver',
       category: payload.category || payload.driverCategory || null,
       shift: payload.shift || null,
       notes: payload.notes || null,
-      address: payload.address || payload.StreetAddress || null,
+      address: payload.address || payload.ResidentialAddress || payload.StreetAddress || null,
+      city: payload.city || payload.City || null,
+      state: payload.state || payload.State || null,
+      postalCode: payload.postalCode || payload.PostalCode || null,
       companyId: effectiveCompanyId,
       branchId: branchIdVal
     };
@@ -170,6 +213,12 @@ exports.create = async (req, res, next) => {
       if (!isNaN(d.getTime())) {
         driverData.dob = d;
         driverData.joiningDate = d;
+      }
+    } else if (payload.age || payload.Age) {
+      const ageNum = parseInt(payload.age || payload.Age, 10);
+      if (!isNaN(ageNum) && ageNum > 0 && ageNum < 120) {
+        const estimatedYear = new Date().getFullYear() - ageNum;
+        driverData.dob = new Date(estimatedYear, 0, 1);
       }
     }
 
@@ -206,7 +255,7 @@ exports.create = async (req, res, next) => {
   }
 };
 
-const sanitizeDriverPayload = (rawPayload) => {
+const sanitizeDriverPayload = async (rawPayload, companyId) => {
   const data = {};
 
   if (rawPayload.firstName !== undefined || rawPayload.FirstName !== undefined) {
@@ -284,7 +333,25 @@ const sanitizeDriverPayload = (rawPayload) => {
   if (rawPayload.category !== undefined || rawPayload.DriverCategory !== undefined) data.category = rawPayload.category || rawPayload.DriverCategory || null;
   if (rawPayload.shift !== undefined || rawPayload.Shift !== undefined) data.shift = rawPayload.shift || rawPayload.Shift || null;
   if (rawPayload.notes !== undefined) data.notes = rawPayload.notes;
-  if (rawPayload.branchId !== undefined) data.branchId = rawPayload.branchId;
+  
+  if (rawPayload.branchId !== undefined) {
+    data.branchId = rawPayload.branchId;
+  } else if (rawPayload.branch || rawPayload.Branch) {
+    const bName = String(rawPayload.branch || rawPayload.Branch).trim();
+    if (bName && bName !== '—') {
+      const foundBranch = await prisma.branch.findFirst({
+        where: { name: { equals: bName }, companyId }
+      }).catch(() => null);
+      if (foundBranch) {
+        data.branchId = foundBranch.id;
+      } else {
+        const createdBranch = await prisma.branch.create({
+          data: { name: bName, companyId }
+        }).catch(() => null);
+        if (createdBranch) data.branchId = createdBranch.id;
+      }
+    }
+  }
 
   if (rawPayload.payType !== undefined || rawPayload.PayType !== undefined) data.payType = rawPayload.payType || rawPayload.PayType || null;
   if (rawPayload.payRate !== undefined || rawPayload.PayRate !== undefined) {
@@ -311,9 +378,19 @@ const sanitizeDriverPayload = (rawPayload) => {
     data.hvCertified = rawPayload.hvCertified === true || rawPayload.HeavyVehicleCertified === 'Yes';
   }
 
-  if (rawPayload.dob || rawPayload.DateofBirth) {
-    const d = new Date(rawPayload.dob || rawPayload.DateofBirth);
-    if (!isNaN(d.getTime())) data.dob = d;
+  const manualAge = rawPayload.age || rawPayload.Age;
+  const rawDobStr = rawPayload.dob || rawPayload.DateofBirth;
+  let parsedDob = rawDobStr ? new Date(rawDobStr) : null;
+  const isInvalidOrFuture = !parsedDob || isNaN(parsedDob.getTime()) || parsedDob.getFullYear() >= new Date().getFullYear();
+
+  if (manualAge && isInvalidOrFuture) {
+    const ageNum = parseInt(manualAge, 10);
+    if (!isNaN(ageNum) && ageNum > 0 && ageNum < 120) {
+      const estimatedYear = new Date().getFullYear() - ageNum;
+      data.dob = new Date(estimatedYear, 0, 1);
+    }
+  } else if (parsedDob && !isNaN(parsedDob.getTime())) {
+    data.dob = parsedDob;
   }
 
   return data;
@@ -323,7 +400,7 @@ const sanitizeDriverPayload = (rawPayload) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const updateData = sanitizeDriverPayload(req.body);
+    const updateData = await sanitizeDriverPayload(req.body, req.tenantId);
 
     if (req.tenantId) {
       const findWhere = { id, companyId: req.tenantId };
@@ -371,10 +448,31 @@ exports.update = async (req, res, next) => {
       where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
     }
 
+    // Resolve branch name string to branchId if branchId not explicitly provided
+    if (!updateData.branchId && (req.body.branch || req.body.Branch)) {
+      const bName = String(req.body.branch || req.body.Branch).trim();
+      if (bName && bName !== '—') {
+        const effCompanyId = req.tenantId || (await prisma.company.findFirst())?.id;
+        let foundBranch = await prisma.branch.findFirst({
+          where: { name: { equals: bName }, companyId: effCompanyId }
+        }).catch(() => null);
+        if (!foundBranch) {
+          foundBranch = await prisma.branch.create({
+            data: { name: bName, companyId: effCompanyId }
+          }).catch(() => null);
+        }
+        if (foundBranch) updateData.branchId = foundBranch.id;
+      }
+    }
+
     try {
       const data = await prisma.driver.update({
         where,
-        data: updateData
+        data: updateData,
+        include: {
+          branch: true,
+          manager: true
+        }
       });
       return sendSuccess(res, data);
     } catch (e) {

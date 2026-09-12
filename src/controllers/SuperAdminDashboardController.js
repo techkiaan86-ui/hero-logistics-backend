@@ -430,12 +430,9 @@ exports.getSystemAnalytics = async (req, res) => {
     // 8. Daily API Usage (Mon - Sun)
     const daysOfWeek = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const apiUsageData = [];
-<<<<<<< HEAD
-=======
     const simBase = [320, 450, 410, 580, 720, 150, 110]; // Simulated weekly trend
     
     let totalApiReqs = 0;
->>>>>>> 0a1d9d66d71ae158e96fb59b148d32a0334883b6
     for (let i = 0; i < 7; i++) {
       const dayStart = new Date(startOfWeek);
       dayStart.setDate(startOfWeek.getDate() + i);
