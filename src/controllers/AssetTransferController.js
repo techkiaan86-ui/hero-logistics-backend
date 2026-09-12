@@ -15,9 +15,9 @@ exports.getAll = async (req, res, next) => {
       prisma.assetTransfer.findMany({
         where, skip, take, orderBy,
         include: {
-          asset: { select: { name: true, sku: true } },
-          fromCompany: { select: { name: true } },
-          toCompany: { select: { name: true } }
+          senderCompany: { select: { name: true } },
+          receiverCompany: { select: { name: true } },
+          auditTrails: { orderBy: { createdAt: 'asc' } }
         }
       }),
       prisma.assetTransfer.count({ where })
