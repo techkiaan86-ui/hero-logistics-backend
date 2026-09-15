@@ -1,5 +1,3 @@
-const fs = require('fs');
-const path = require('path');
 const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
@@ -69,35 +67,30 @@ exports.getById = async (req, res, next) => {
   }
 };
 
-// Helper to sanitize avatar URL and auto-convert Base64 strings to static upload files
+// Helper to sanitize avatar URL.
+// IMPORTANT: We do NOT save to disk (Railway filesystem is ephemeral —
+// files are wiped on every redeploy causing 404s). Instead, base64 images
+// are returned as-is (data: URLs) and stored directly in the database.
+// The frontend renders <img src="data:image/..." /> natively without any file serving.
 const cleanAvatarUrl = (url) => {
   if (!url || typeof url !== 'string') return null;
   const trimmed = url.trim();
+
+  // Reject obviously broken/truncated URLs
   if (trimmed.includes('...') || trimmed.endsWith('..') || trimmed === 'https://pravatar.cc/150?u...') return null;
-  
+
+  // If it's a base64 data URL — store it directly in the DB (no disk write)
   if (trimmed.startsWith('data:image/')) {
-    try {
-      const matches = trimmed.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        const mimeType = matches[1];
-        const base64Data = Buffer.from(matches[2], 'base64');
-        const ext = mimeType.split('/')[1] || 'png';
-        const filename = `driver-${Date.now()}-${Math.round(Math.random() * 1e9)}.${ext}`;
-        const publicDir = path.join(__dirname, '../../public');
-        const uploadsDir = path.join(publicDir, 'uploads');
-        if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        const filePath = path.join(uploadsDir, filename);
-        fs.writeFileSync(filePath, base64Data);
-        return `/uploads/${filename}`;
-      }
-    } catch (err) {
-      console.error('Error auto-saving base64 avatar to file:', err);
-      return null;
+    const matches = trimmed.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (matches && matches.length === 3) {
+      return trimmed; // Store data URL in DB — works on Railway and everywhere
     }
+    return null; // Malformed data URL
   }
-  return trimmed;
+
+  return trimmed; // Regular http/https URL — return as-is
 };
+
 
 // Create new Driver
 exports.create = async (req, res, next) => {
