@@ -33,7 +33,7 @@ exports.getDashboardMetrics = async (req, res, next) => {
       prisma.load.count({ where: whereScope }),
       prisma.load.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'ACTIVE', 'ASSIGNED', 'PLANNED'] } } }),
       prisma.driver.count({ where: whereScope }),
-      prisma.vehicle.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'IDLE', 'ACTIVE'] } } }),
+      prisma.vehicle.count({ where: { ...whereScope, status: { in: ['IN_TRANSIT', 'IDLE'] } } }),
       prisma.branch.count({ where: whereScope }),
       prisma.warehouse.count({ where: warehouseScope }),
       prisma.customer.count({ where: whereScope }),
