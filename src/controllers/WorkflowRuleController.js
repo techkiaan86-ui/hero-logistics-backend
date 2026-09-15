@@ -3,10 +3,24 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const getEffectiveCompanyId = (req) => {
+  return req.tenantId || req.user?.companyId || req.user?.tenantId || null;
+};
+
 // Get all Workflow Rules
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
 
     const [data, total] = await Promise.all([
       prisma.workflowRule.findMany({
@@ -28,9 +42,17 @@ exports.getAll = async (req, res, next) => {
 // Get single Workflow Rule by ID
 exports.getById = async (req, res, next) => {
   try {
-    const data = await prisma.workflowRule.findFirst({
-      where: { id: req.params.id }
-    });
+    const companyId = getEffectiveCompanyId(req);
+    const where = { id: req.params.id };
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Workflow rule not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
+
+    const data = await prisma.workflowRule.findFirst({ where });
 
     if (!data) {
       return sendError(res, {
@@ -49,6 +71,7 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const { name, desc, description, category, trigger, action, status, createdBy } = req.body;
+    const companyId = getEffectiveCompanyId(req);
 
     if (!name) {
       return sendError(res, {
@@ -57,11 +80,11 @@ exports.create = async (req, res, next) => {
       }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    let companyId = req.body.companyId;
-    if (!companyId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) companyId = comp.id;
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
     }
+
+    const targetCompanyId = companyId || req.body.companyId;
 
     const data = await prisma.workflowRule.create({
       data: {
@@ -71,8 +94,8 @@ exports.create = async (req, res, next) => {
         trigger: trigger || 'Load Status: Delivered',
         action: action || 'Create Invoice & Notify Accounts',
         status: status || 'Active',
-        createdBy: createdBy || 'Sarah Mitchell',
-        ...(companyId && { companyId })
+        createdBy: createdBy || req.user?.name || 'Staff',
+        ...(targetCompanyId && { companyId: targetCompanyId })
       }
     });
 
@@ -87,6 +110,18 @@ exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, desc, description, category, trigger, action, status } = req.body;
+    const companyId = getEffectiveCompanyId(req);
+    const where = { id };
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Workflow rule not found' }, HTTP_STATUS.NOT_FOUND);
+      where.companyId = companyId;
+    }
+
+    const existing = await prisma.workflowRule.findFirst({ where });
+    if (!existing) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Workflow rule not found' }, HTTP_STATUS.NOT_FOUND);
+    }
 
     const updateData = {};
     if (name !== undefined) updateData.name = name.trim();
@@ -98,21 +133,11 @@ exports.update = async (req, res, next) => {
     if (action !== undefined) updateData.action = action;
     if (status !== undefined) updateData.status = status;
 
-    try {
-      const data = await prisma.workflowRule.update({
-        where: { id },
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'Workflow rule not found'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      throw e;
-    }
+    const data = await prisma.workflowRule.update({
+      where: { id: existing.id },
+      data: updateData
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
@@ -121,17 +146,21 @@ exports.update = async (req, res, next) => {
 // Delete Workflow Rule
 exports.delete = async (req, res, next) => {
   try {
-    await prisma.workflowRule.delete({
-      where: { id: req.params.id }
-    });
+    const companyId = getEffectiveCompanyId(req);
+    const where = { id: req.params.id };
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      where.companyId = companyId;
+    }
+
+    const existing = await prisma.workflowRule.findFirst({ where });
+    if (existing) {
+      await prisma.workflowRule.delete({ where: { id: existing.id } });
+    }
+
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    if (error.code === 'P2025') {
-      return sendError(res, {
-        code: ERROR_CODES.NOT_FOUND,
-        message: 'Workflow rule not found'
-      }, HTTP_STATUS.NOT_FOUND);
-    }
-    next(error);
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };

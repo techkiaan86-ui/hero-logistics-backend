@@ -9,10 +9,21 @@ const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 // Get all Vehicles with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
-    await syncMissingVehicleColumns();
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
     
-    if (req.tenantId) where.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
+
+    await syncMissingVehicleColumns().catch(() => {});
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -39,8 +50,18 @@ exports.getAll = async (req, res, next) => {
 // Get single Vehicle by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = req.tenantId || req.user?.companyId;
     const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.NOT_FOUND,
+          message: 'Vehicle not found'
+        }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -236,27 +257,17 @@ exports.create = async (req, res, next) => {
   try {
     await syncMissingVehicleColumns();
     const rawPayload = { ...req.body };
-    let effectiveCompanyId = rawPayload.companyId || req.tenantId || req.user?.companyId;
+    const companyId = req.tenantId || req.user?.companyId;
 
-    // Guaranteed Company Resolution
-    if (!effectiveCompanyId) {
-      try {
-        const comp = await prisma.company.findFirst();
-        if (comp) {
-          effectiveCompanyId = comp.id;
-        } else {
-          const newComp = await prisma.company.create({
-            data: {
-              name: 'Hero Logistics',
-              tenantId: `TEN-${Date.now()}`
-            }
-          });
-          effectiveCompanyId = newComp.id;
-        }
-      } catch (err) {
-        console.error('Company resolution error:', err.message);
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
       }
+      rawPayload.companyId = companyId;
+    } else {
+      rawPayload.companyId = rawPayload.companyId || companyId;
     }
+    const effectiveCompanyId = rawPayload.companyId;
 
     if (!effectiveCompanyId) {
       try {
@@ -520,8 +531,17 @@ exports.update = async (req, res, next) => {
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
     const where = { id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Vehicle not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -535,7 +555,7 @@ exports.delete = async (req, res, next) => {
     }
 
     await prisma.vehicle.delete({
-      where: { id }
+      where: { id: existing.id }
     });
     return sendSuccess(res, { id, message: 'Vehicle deleted successfully' });
   } catch (error) {

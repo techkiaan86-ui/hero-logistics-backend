@@ -4,12 +4,27 @@ const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 const LoadService = require('../services/LoadService');
 
+const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
+
+const getEffectiveCompanyId = (req) => {
+  return resolveCompanyId(req);
+};
+
 // Get all Loads with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
     
-    if (req.tenantId) where.companyId = req.tenantId;
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -43,8 +58,19 @@ exports.getAll = async (req, res, next) => {
 // Get single Load by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.NOT_FOUND,
+          message: 'Load not found'
+        }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -83,9 +109,20 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    if (req.tenantId) {
-      payload.companyId = req.tenantId;
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.UNAUTHORIZED_ACCESS,
+          message: 'Company context required to create loads'
+        }, HTTP_STATUS.FORBIDDEN);
+      }
+      payload.companyId = companyId;
+    } else {
+      payload.companyId = payload.companyId || companyId;
     }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       payload.branchId = req.user.branchId;
     }
@@ -98,20 +135,13 @@ exports.create = async (req, res, next) => {
       }
     }
 
-    if (!payload.companyId) {
-      const firstCompany = await prisma.company.findFirst();
-      if (firstCompany) {
-        payload.companyId = firstCompany.id;
-      }
-    }
-
     delete payload.id;
     delete payload.rawId;
 
     // Guaranteed unique loadRef
     if (payload.loadRef) {
       const existingRef = await prisma.load.findFirst({
-        where: { loadRef: String(payload.loadRef) }
+        where: { loadRef: String(payload.loadRef), companyId: payload.companyId }
       });
       if (existingRef) {
         payload.loadRef = `${payload.loadRef}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -123,7 +153,7 @@ exports.create = async (req, res, next) => {
     // Guaranteed unique draftId
     if (payload.draftId) {
       const existingDraft = await prisma.load.findFirst({
-        where: { draftId: String(payload.draftId) }
+        where: { draftId: String(payload.draftId), companyId: payload.companyId }
       });
       if (existingDraft) {
         payload.draftId = `DRAFT-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -215,7 +245,6 @@ exports.create = async (req, res, next) => {
       payload.items = { create: itemsData };
     }
 
-    // Clean up frontend only parameters that are not in schema
     delete payload.pickupLocation;
     delete payload.deliveryLocation;
     delete payload.driver;
@@ -244,8 +273,9 @@ exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
+    delete updateData.companyId; // Do not allow companyId mutation
+    const companyId = getEffectiveCompanyId(req);
 
-    // Sanitize status string if needed
     if (updateData.status) {
       if (updateData.status === 'In Transit') updateData.status = 'IN_TRANSIT';
       else if (updateData.status === 'En Route') updateData.status = 'ASSIGNED';
@@ -258,8 +288,11 @@ exports.update = async (req, res, next) => {
     }
 
     const findWhere = { OR: [{ id }, { loadRef: id }] };
-    if (req.tenantId) {
-      findWhere.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Load not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      findWhere.companyId = companyId;
     }
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       findWhere.branchId = req.user.branchId;
@@ -268,26 +301,15 @@ exports.update = async (req, res, next) => {
       findWhere.driver = { userId: req.user.id };
     }
 
-    let targetLoad = await prisma.load.findFirst({
+    const targetLoad = await prisma.load.findFirst({
       where: findWhere
     });
 
     if (!targetLoad) {
-      if (req.tenantId) {
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'Load not found in this company context'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      const company = await prisma.company.findFirst();
-      targetLoad = await prisma.load.create({
-        data: {
-          loadRef: id,
-          type: updateData.type || 'General Freight',
-          status: updateData.status || 'DRAFT',
-          companyId: company ? company.id : undefined
-        }
-      });
+      return sendError(res, {
+        code: ERROR_CODES.NOT_FOUND,
+        message: 'Load not found'
+      }, HTTP_STATUS.NOT_FOUND);
     }
 
     const data = await prisma.load.update({
@@ -304,6 +326,7 @@ exports.update = async (req, res, next) => {
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const companyId = getEffectiveCompanyId(req);
     const findWhere = {
       OR: [
         { id: id },
@@ -311,8 +334,9 @@ exports.delete = async (req, res, next) => {
         { draftId: id }
       ]
     };
-    if (req.tenantId) {
-      findWhere.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      findWhere.companyId = companyId;
     }
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       findWhere.branchId = req.user.branchId;
@@ -321,28 +345,15 @@ exports.delete = async (req, res, next) => {
       findWhere.driver = { userId: req.user.id };
     }
 
-    let targetLoad = await prisma.load.findFirst({
+    const targetLoad = await prisma.load.findFirst({
       where: findWhere
     }).catch(() => null);
-
-    if (!targetLoad) {
-      // Fallback search by ID / loadRef / draftId without company scoping
-      targetLoad = await prisma.load.findFirst({
-        where: {
-          OR: [
-            { id: id },
-            { loadRef: id },
-            { draftId: id }
-          ]
-        }
-      }).catch(() => null);
-    }
 
     if (!targetLoad) {
       return res.status(HTTP_STATUS.NO_CONTENT).send();
     }
 
-    // Cascade delete child records to prevent foreign key constraint failures (P2003)
+    // Cascade delete child records
     if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
     if (prisma.preStartChecklist) await prisma.preStartChecklist.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
     if (prisma.telemetryLog) await prisma.telemetryLog.deleteMany({ where: { loadId: targetLoad.id } }).catch(() => {});
@@ -358,7 +369,6 @@ exports.delete = async (req, res, next) => {
       where: { OR: [{ id: targetLoad.id }, { loadRef: targetLoad.id }] }
     }).catch(() => {});
     
-    // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
     if (error.code === 'P2025' || error.code === 'P2023') {
@@ -373,10 +383,9 @@ exports.activate = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { assignment } = req.body;
+    const companyId = getEffectiveCompanyId(req);
     
-    // We would pass req.tenantId if tenantResolver was providing it
-    const data = await LoadService.activateLoad(id, assignment, req.tenantId);
-    
+    const data = await LoadService.activateLoad(id, assignment, companyId);
     return sendSuccess(res, data, HTTP_STATUS.OK);
   } catch (error) {
     if (error.code === 'LOAD_ACTIVATION_FAILED') {
@@ -391,8 +400,9 @@ exports.assign = async (req, res, next) => {
   try {
     const { id } = req.params;
     const assignment = req.body;
+    const companyId = getEffectiveCompanyId(req);
     
-    const data = await LoadService.assignResources(id, assignment, req.tenantId);
+    const data = await LoadService.assignResources(id, assignment, companyId);
     return sendSuccess(res, data, HTTP_STATUS.OK);
   } catch (error) {
     next(error);
@@ -404,12 +414,13 @@ exports.updateStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status, reason } = req.body;
+    const companyId = getEffectiveCompanyId(req);
     
     if (!status) {
       return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Status is required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    const data = await LoadService.updateStatus(id, status, reason, req.tenantId);
+    const data = await LoadService.updateStatus(id, status, reason, companyId);
     return sendSuccess(res, data, HTTP_STATUS.OK);
   } catch (error) {
     next(error);
@@ -419,7 +430,11 @@ exports.updateStatus = async (req, res, next) => {
 // Planning Board Menu Single Dedicated Endpoint
 exports.getPlanningBoard = async (req, res, next) => {
   try {
-    const companyWhere = req.tenantId ? { companyId: req.tenantId } : {};
+    const companyId = getEffectiveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, { drivers: [], unassignedLoads: [], customers: [], vehicles: [] });
+    }
+    const companyWhere = getTenantWhere(req);
 
     const [dbDrivers, dbLoads, dbCustomers, dbVehicles] = await Promise.all([
       prisma.driver.findMany({
@@ -449,7 +464,6 @@ exports.getPlanningBoard = async (req, res, next) => {
       }).catch(() => [])
     ]);
 
-    // Format drivers with their assigned loads
     const formattedDrivers = dbDrivers.map((d, dIdx) => {
       const driverName = (d.firstName || d.lastName) ? `${d.firstName || ''} ${d.lastName || ''}`.trim() : (d.driverCode || `Driver-${dIdx + 1}`);
       const driverLoads = d.loads || [];
@@ -461,8 +475,8 @@ exports.getPlanningBoard = async (req, res, next) => {
         if (Array.isArray(l.stops) && l.stops.length > 0) {
           const sorted = [...l.stops].sort((a, b) => (a.sequenceIndex || 0) - (b.sequenceIndex || 0));
           const p = sorted[0]?.address || 'Origin';
-          const d = sorted[sorted.length - 1]?.address || 'Destination';
-          routeStr = `${p} → ${d}`;
+          const dest = sorted[sorted.length - 1]?.address || 'Destination';
+          routeStr = `${p} → ${dest}`;
         } else if (l.notes && l.notes.includes(' to ')) {
           routeStr = l.notes.replace(' to ', ' → ');
         }
@@ -501,7 +515,6 @@ exports.getPlanningBoard = async (req, res, next) => {
       };
     });
 
-    // Format unassigned loads
     const unassignedLoads = dbLoads
       .filter(l => !l.driverId)
       .map(l => {
@@ -509,8 +522,8 @@ exports.getPlanningBoard = async (req, res, next) => {
         if (Array.isArray(l.stops) && l.stops.length > 0) {
           const sorted = [...l.stops].sort((a, b) => (a.sequenceIndex || 0) - (b.sequenceIndex || 0));
           const p = sorted[0]?.address || 'Origin';
-          const d = sorted[sorted.length - 1]?.address || 'Destination';
-          routeStr = `${p} → ${d}`;
+          const dest = sorted[sorted.length - 1]?.address || 'Destination';
+          routeStr = `${p} → ${dest}`;
         } else if (l.notes && l.notes.includes(' to ')) {
           routeStr = l.notes.replace(' to ', ' → ');
         }
@@ -540,7 +553,11 @@ exports.getPlanningBoard = async (req, res, next) => {
 // Active Loads Menu Single Dedicated Endpoint
 exports.getActiveLoads = async (req, res, next) => {
   try {
-    const companyWhere = req.tenantId ? { companyId: req.tenantId } : {};
+    const companyId = getEffectiveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, { loads: [], drivers: [], customers: [], branches: [], vehicles: [] });
+    }
+    const companyWhere = getTenantWhere(req);
 
     const [dbLoads, dbDrivers, dbCustomers, dbBranches, dbVehicles] = await Promise.all([
       prisma.load.findMany({
@@ -602,11 +619,11 @@ exports.getActiveLoads = async (req, res, next) => {
 
       const driverName = dbLoad.driver
         ? (`${dbLoad.driver.firstName || ''} ${dbLoad.driver.lastName || ''}`.trim() || dbLoad.driver.driverCode || 'Driver')
-        : (dbDrivers[idx % Math.max(1, dbDrivers.length)]
-            ? `${dbDrivers[idx % Math.max(1, dbDrivers.length)].firstName || ''} ${dbDrivers[idx % Math.max(1, dbDrivers.length)].lastName || ''}`.trim()
+        : (dbDrivers.length > 0 && dbDrivers[idx % dbDrivers.length]
+            ? `${dbDrivers[idx % dbDrivers.length].firstName || ''} ${dbDrivers[idx % dbDrivers.length].lastName || ''}`.trim()
             : 'Unassigned');
 
-      const customerName = dbLoad.customer?.name || (dbCustomers[idx % Math.max(1, dbCustomers.length)]?.name) || 'Direct Customer';
+      const customerName = dbLoad.customer?.name || (dbCustomers.length > 0 ? dbCustomers[idx % dbCustomers.length]?.name : 'Direct Customer');
 
       return {
         id: loadRefStr,
@@ -627,9 +644,9 @@ exports.getActiveLoads = async (req, res, next) => {
         routeFrom: routeFromStr,
         routeTo: routeToStr,
         customer: customerName,
-        vehicle: dbLoad.truck ? `${dbLoad.truck.make || ''} ${dbLoad.truck.model || ''}`.trim() : (dbVehicles[idx % Math.max(1, dbVehicles.length)] ? `${dbVehicles[idx % Math.max(1, dbVehicles.length)].make || ''} ${dbVehicles[idx % Math.max(1, dbVehicles.length)].model || ''}`.trim() : 'Volvo FH16 750'),
+        vehicle: dbLoad.truck ? `${dbLoad.truck.make || ''} ${dbLoad.truck.model || ''}`.trim() : (dbVehicles.length > 0 && dbVehicles[idx % dbVehicles.length] ? `${dbVehicles[idx % dbVehicles.length].make || ''} ${dbVehicles[idx % dbVehicles.length].model || ''}`.trim() : 'Volvo FH16 750'),
         trailer: dbLoad.trailerId || 'TR-01',
-        rego: dbLoad.truck?.rego || (dbVehicles[idx % Math.max(1, dbVehicles.length)]?.rego) || 'NEW-999',
+        rego: dbLoad.truck?.rego || (dbVehicles.length > 0 ? dbVehicles[idx % dbVehicles.length]?.rego : 'NEW-999'),
         truckPhoto: 'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?auto=format&fit=crop&q=80&w=300',
         reqDate: dbLoad.loadDate ? (dbLoad.loadDate instanceof Date ? dbLoad.loadDate.toLocaleDateString('en-GB') : new Date(dbLoad.loadDate).toLocaleDateString('en-GB')) : new Date(dbLoad.createdAt).toLocaleDateString('en-GB'),
         reqTime: '05:00 PM',

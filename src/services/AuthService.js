@@ -11,28 +11,16 @@ class AuthService {
   async login(email, password, ipAddress, userAgent) {
     const cleanEmail = (email || '').trim().toLowerCase();
 
-    // 1. Find user by email
+    // 1. Find user by exact email
     const allUsers = await prisma.user.findMany();
     let user = allUsers.find(u => (u.email || '').trim().toLowerCase() === cleanEmail);
 
-    if (!user) {
-      if (cleanEmail.includes('driver')) user = allUsers.find(u => u.role === 'DRIVER');
-      else if (cleanEmail.includes('dispatch')) user = allUsers.find(u => u.role === 'DISPATCHER');
-      else if (cleanEmail.includes('sales')) user = allUsers.find(u => u.role === 'SALES');
-      else if (cleanEmail.includes('warehouse')) user = allUsers.find(u => u.role === 'WAREHOUSE');
-      else if (cleanEmail.includes('yard')) user = allUsers.find(u => u.role === 'YARD');
-      else if (cleanEmail.includes('account')) user = allUsers.find(u => u.role === 'ACCOUNTS');
-      else if (cleanEmail.includes('customer')) user = allUsers.find(u => u.role === 'CUSTOMER');
-      else if (cleanEmail.includes('super')) user = allUsers.find(u => u.role === 'SUPER_ADMIN');
-      else if (cleanEmail.includes('company') || cleanEmail.includes('admin')) user = allUsers.find(u => u.role === 'COMPANY_ADMIN');
-    }
-
-    if (!user && (cleanEmail.includes('super') || cleanEmail === 'super-admin@hero.com' || cleanEmail === 'admin@hero.com')) {
+    if (!user && (cleanEmail === 'super-admin@hero.com' || cleanEmail === 'admin@hero.com')) {
       const passHash = await bcrypt.hash('123456', 10);
       user = await prisma.user.create({
         data: {
           name: 'Super Admin',
-          email: 'super-admin@hero.com',
+          email: cleanEmail,
           password: passHash,
           role: 'SUPER_ADMIN',
           status: 'ACTIVE'
@@ -41,10 +29,6 @@ class AuthService {
         console.error('Failed auto-creating super admin:', err.message);
         return null;
       });
-    }
-
-    if (!user) {
-      user = allUsers[0];
     }
 
     if (!user) {
@@ -88,22 +72,13 @@ class AuthService {
       }
     }
 
-    if (!isMatch && password && (commonPasses.includes(password) || process.env.NODE_ENV !== 'production' || password.length >= 3)) {
-      isMatch = true;
-      const newHash = await bcrypt.hash(password, 10);
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { password: newHash }
-      }).catch(err => console.error('Failed to update password hash:', err.message));
-    }
-
     if (!isMatch) {
       throw { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password', statusCode: 401 };
     }
 
     // Generate tokens
     const accessToken = jwt.sign(
-      { userId: user.id, role: user.role, tenantId: user.companyId },
+      { userId: user.id, role: user.role, tenantId: user.companyId, companyId: user.companyId },
       SECRET,
       { expiresIn: EXPIRES_IN }
     );

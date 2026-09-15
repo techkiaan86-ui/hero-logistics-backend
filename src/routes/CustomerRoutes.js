@@ -4,9 +4,10 @@ const CustomerController = require('../controllers/CustomerController');
 const { verifyToken } = require('../middlewares/auth');
 const { resolveTenant } = require('../middlewares/tenantResolver');
 
-router.get('/portal', CustomerController.getPortalData);
-
 router.use(verifyToken, resolveTenant);
+
+router.get('/portal', CustomerController.getPortalData);
+router.delete('/all', CustomerController.deleteAll);
 
 router.route('/')
   .get(CustomerController.getAll)

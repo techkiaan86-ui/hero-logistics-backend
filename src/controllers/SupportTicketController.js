@@ -3,12 +3,24 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const getEffectiveCompanyId = (req) => {
+  return req.tenantId || req.user?.companyId || req.user?.tenantId || null;
+};
+
 // Get all SupportTickets with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const companyId = getEffectiveCompanyId(req);
     
-    if (req.tenantId) where.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
 
     const [data, total] = await Promise.all([
       prisma.supportTicket.findMany({
@@ -32,8 +44,15 @@ exports.getAll = async (req, res, next) => {
 // Get single SupportTicket by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'SupportTicket not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
 
     const data = await prisma.supportTicket.findFirst({
       where,
@@ -61,18 +80,20 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    if (req.tenantId && !payload.companyId) payload.companyId = req.tenantId;
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
+      }
+      payload.companyId = companyId;
+    } else {
+      payload.companyId = payload.companyId || companyId;
+    }
 
     if (payload.description) {
       payload.message = payload.description;
       delete payload.description;
-    }
-
-    if (!payload.companyId) {
-      const company = await prisma.company.findFirst();
-      if (company) {
-        payload.companyId = company.id;
-      }
     }
 
     const data = await prisma.supportTicket.create({
@@ -88,42 +109,29 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// Update SupportTicket with Optimistic Concurrency check
+// Update SupportTicket
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
-    
+    const companyId = getEffectiveCompanyId(req);
     const where = { id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
-
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
+    
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'SupportTicket not found' }, HTTP_STATUS.NOT_FOUND);
+      where.companyId = companyId;
     }
 
-    try {
-      const data = await prisma.supportTicket.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'SupportTicket not found'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      throw e;
+    const existing = await prisma.supportTicket.findFirst({ where });
+    if (!existing) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'SupportTicket not found' }, HTTP_STATUS.NOT_FOUND);
     }
+
+    const data = await prisma.supportTicket.update({
+      where: { id: existing.id },
+      data: updateData
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
@@ -132,21 +140,22 @@ exports.update = async (req, res, next) => {
 // Delete SupportTicket
 exports.delete = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
 
-    await prisma.supportTicket.delete({ where });
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      where.companyId = companyId;
+    }
+
+    const existing = await prisma.supportTicket.findFirst({ where });
+    if (existing) {
+      await prisma.supportTicket.delete({ where: { id: existing.id } });
+    }
     
-    // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    if (error.code === 'P2025') {
-      return sendError(res, {
-        code: ERROR_CODES.NOT_FOUND,
-        message: 'SupportTicket not found'
-      }, HTTP_STATUS.NOT_FOUND);
-    }
-    next(error);
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };
 
@@ -156,26 +165,32 @@ exports.addReply = async (req, res, next) => {
     const { id } = req.params;
     const { message, text } = req.body;
     const replyText = message || text;
+    const companyId = getEffectiveCompanyId(req);
 
     if (!replyText) {
       return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Message text is required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    const ticket = await prisma.supportTicket.findUnique({ where: { id } });
+    const where = { id };
+    if (req.user?.role !== 'SUPER_ADMIN' && companyId) {
+      where.companyId = companyId;
+    }
+
+    const ticket = await prisma.supportTicket.findFirst({ where });
     if (!ticket) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'SupportTicket not found' }, HTTP_STATUS.NOT_FOUND);
     }
 
-    let user = req.user ? await prisma.user.findUnique({ where: { id: req.user.id } }) : null;
-    if (!user) {
-      user = await prisma.user.findFirst();
+    const userId = req.user?.id || req.user?.userId;
+    if (!userId) {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'User context required to reply' }, HTTP_STATUS.UNAUTHORIZED);
     }
 
     const reply = await prisma.ticketReply.create({
       data: {
         message: replyText,
-        ticketId: id,
-        authorId: user.id
+        ticketId: ticket.id,
+        authorId: userId
       },
       include: { author: { select: { id: true, name: true, email: true, role: true } } }
     });

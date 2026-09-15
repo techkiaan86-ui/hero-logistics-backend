@@ -38,6 +38,8 @@ exports.verifyToken = async (req, res, next) => {
         }
       });
       if (dbUser) {
+        req.user.companyId = dbUser.companyId || req.user.companyId || null;
+        req.user.tenantId = dbUser.companyId || req.user.tenantId || req.user.companyId || null;
         req.user.branchId = dbUser.branchId || null;
         req.user.role = dbUser.role || req.user.role;
         req.user.permissions = dbUser.customRole?.permissions?.map(p => p.actionString) || [];
@@ -65,6 +67,8 @@ exports.verifyToken = async (req, res, next) => {
             }
           });
           if (dbUser) {
+            req.user.companyId = dbUser.companyId || req.user.companyId || null;
+            req.user.tenantId = dbUser.companyId || req.user.tenantId || req.user.companyId || null;
             req.user.branchId = dbUser.branchId || null;
             req.user.role = dbUser.role || req.user.role;
             req.user.permissions = dbUser.customRole?.permissions?.map(p => p.actionString) || [];

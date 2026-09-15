@@ -95,7 +95,8 @@ exports.create = async (req, res, next) => {
       accountManager,
       country,
       trialExpiry,
-      planTier
+      planTier,
+      passwordSetupType
     } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -141,10 +142,11 @@ exports.create = async (req, res, next) => {
       generatedTenantId = `#TEN-${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 90)}`;
     }
 
-    // Hash password prior to creation
+    // Hash password prior to creation (or auto-generate initial temp password for EMAIL_LINK mode)
     let hashedPassword = null;
-    if (cleanEmail && adminPassword) {
-      hashedPassword = await bcrypt.hash(adminPassword, 10);
+    const effectivePassword = adminPassword || (passwordSetupType === 'EMAIL_LINK' || !adminPassword ? `HeroSetup_${Date.now().toString(36)}!${Math.floor(Math.random() * 1000)}` : null);
+    if (cleanEmail && effectivePassword) {
+      hashedPassword = await bcrypt.hash(effectivePassword, 10);
     }
 
     // 1. Create the Company
@@ -162,7 +164,7 @@ exports.create = async (req, res, next) => {
 
     await prisma.auditLog.create({
       data: {
-        action: `SYSTEM::New workspace registered: ${cleanName} (${generatedTenantId})`,
+        action: `SYSTEM::New workspace registered: ${cleanName} (${generatedTenantId}) [PasswordMode: ${passwordSetupType || (adminPassword ? 'MANUAL' : 'EMAIL_LINK')}]`,
         operator: 'System Registration',
         companyId: company.id
       }

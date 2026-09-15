@@ -58,11 +58,8 @@ exports.create = async (req, res, next) => {
       }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    let companyId = req.body.companyId;
-    if (!companyId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) companyId = comp.id;
-    }
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    let companyId = resolveCompanyId(req) || req.body.companyId;
 
     let typeEnum = 'CUSTOM';
     if (integrationType) {

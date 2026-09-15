@@ -4,13 +4,35 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
+
+// Get effective companyId from request context safely
+const getEffectiveCompanyId = (req) => {
+  return resolveCompanyId(req);
+};
+
 // Get all Customers with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
-    await syncMissingVehicleColumns();
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    
-    if (req.tenantId) where.companyId = req.tenantId;
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        const meta = buildPaginationMeta(0, currentPage, pageSize, req.query.sort);
+        return sendList(res, [], meta);
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    } else if (companyId) {
+      where.companyId = companyId;
+    } else {
+      const meta = buildPaginationMeta(0, currentPage, pageSize, req.query.sort);
+      return sendList(res, [], meta);
+    }
+    await syncMissingVehicleColumns().catch(() => {});
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -36,16 +58,28 @@ exports.getAll = async (req, res, next) => {
 // Single dedicated endpoint for Customers Portal menu
 exports.getPortalData = async (req, res, next) => {
   try {
-    await syncMissingVehicleColumns();
-    let companyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
+    const companyId = getEffectiveCompanyId(req);
+
     if (!companyId) {
-      const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-      if (firstCompany) companyId = firstCompany.id;
+      return sendSuccess(res, {
+        customers: [],
+        users: [],
+        branches: [],
+        stats: {
+          totalCustomers: 0,
+          activeCustomers: 0,
+          customersThisMonth: 0,
+          inactiveCustomers: 0,
+          topCustomer: 'N/A'
+        }
+      });
     }
 
-    const companyWhere = companyId ? { companyId } : {};
+    await syncMissingVehicleColumns().catch(() => {});
 
-    let dbCustomers = await prisma.customer.findMany({
+    const companyWhere = { companyId };
+
+    const dbCustomers = await prisma.customer.findMany({
       where: companyWhere,
       include: {
         accountManager: true,
@@ -53,28 +87,6 @@ exports.getPortalData = async (req, res, next) => {
       },
       orderBy: { createdAt: 'desc' }
     }).catch(() => []);
-
-    // Auto seed initial customer if DB is empty
-    if (dbCustomers.length === 0 && companyId) {
-      const created = await prisma.customer.create({
-        data: {
-          name: 'ABC Motors Pty Ltd',
-          abn: '12 345 678 901',
-          type: 'BUSINESS',
-          status: 'ACTIVE',
-          contactName: 'John Doe',
-          email: 'john@abcmotors.com.au',
-          phone: '0412 345 678',
-          billingTerms: '14 Days EOM',
-          companyId
-        },
-        include: { accountManager: true, loads: true }
-      }).catch(() => null);
-
-      if (created) {
-        dbCustomers = [created];
-      }
-    }
 
     const [dbUsers, dbBranches] = await Promise.all([
       prisma.user.findMany({
@@ -129,8 +141,19 @@ exports.getPortalData = async (req, res, next) => {
 // Get single Customer by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.NOT_FOUND,
+          message: 'Customer not found'
+        }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -161,17 +184,22 @@ exports.create = async (req, res, next) => {
   try {
     const raw = { ...req.body };
     const payload = {};
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.UNAUTHORIZED_ACCESS,
+          message: 'Company context required to create customer'
+        }, HTTP_STATUS.FORBIDDEN);
+      }
+      payload.companyId = companyId;
+    } else {
+      payload.companyId = raw.companyId || companyId;
+    }
 
     payload.name = raw.name || raw.companyName || 'New Customer';
     if (raw.abn) payload.abn = String(raw.abn);
-    if (raw.companyId) payload.companyId = raw.companyId;
-    else if (req.tenantId) payload.companyId = req.tenantId;
-
-    if (!payload.companyId) {
-      const firstCompany = await prisma.company.findFirst();
-      if (firstCompany) payload.companyId = firstCompany.id;
-    }
-
     if (raw.contactName || raw.primaryContact) payload.contactName = raw.contactName || raw.primaryContact;
     if (raw.email) payload.email = raw.email;
     if (raw.phone) payload.phone = raw.phone;
@@ -209,40 +237,40 @@ exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
+    delete updateData.companyId; // Never trust companyId from payload
+    const companyId = getEffectiveCompanyId(req);
     
     const where = { id };
-    if (req.tenantId) where.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Customer not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
 
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
+    // Verify record exists & belongs to tenant
+    const existing = await prisma.customer.findFirst({ where });
+    if (!existing) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Customer not found' }, HTTP_STATUS.NOT_FOUND);
     }
 
-    try {
-      const data = await prisma.customer.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'Customer not found'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      throw e;
+    const ifMatch = req.headers['if-match'];
+    if (ifMatch && existing.version !== parseInt(ifMatch.replace(/"/g, ''), 10)) {
+      return sendError(res, {
+        code: ERROR_CODES.RESOURCE_CONFLICT,
+        message: 'Resource was updated by another user or does not exist.'
+      }, HTTP_STATUS.CONFLICT);
     }
+
+    const data = await prisma.customer.update({
+      where: { id: existing.id },
+      data: updateData
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
@@ -252,24 +280,70 @@ exports.update = async (req, res, next) => {
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const targetCustomer = await prisma.customer.findFirst({
-      where: {
-        OR: [{ id }, { name: id }],
-        ...(req.tenantId && { companyId: req.tenantId })
-      }
-    });
+    const companyId = getEffectiveCompanyId(req);
+    const where = { id };
 
-    if (targetCustomer) {
-      await prisma.customerInvoice.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
-      await prisma.load.deleteMany({ where: { customerId: targetCustomer.id } }).catch(() => {});
-      await prisma.customer.delete({ where: { id: targetCustomer.id } }).catch(() => {});
-    } else {
-      await prisma.customer.delete({ where: { id } }).catch(() => {});
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return sendSuccess(res, null, HTTP_STATUS.NO_CONTENT);
+      where.companyId = companyId;
     }
+
+    const targetCustomer = await prisma.customer.findFirst({ where });
+
+    if (!targetCustomer) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Customer not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const custId = targetCustomer.id;
+
+    // Delete or unlink all child dependent records cleanly prior to customer deletion
+    if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { customerId: custId } }).catch(() => {});
+    if (prisma.loadItem) await prisma.loadItem.deleteMany({ where: { customerId: custId } }).catch(() => {});
+    if (prisma.inboundReceipt) await prisma.inboundReceipt.deleteMany({ where: { customerId: custId } }).catch(() => {});
+    if (prisma.load) {
+      const loads = await prisma.load.findMany({ where: { customerId: custId }, select: { id: true } }).catch(() => []);
+      const loadIds = loads.map(l => l.id);
+      if (loadIds.length > 0) {
+        if (prisma.routeStop) await prisma.routeStop.deleteMany({ where: { loadId: { in: loadIds } } }).catch(() => {});
+        if (prisma.loadExpense) await prisma.loadExpense.deleteMany({ where: { loadId: { in: loadIds } } }).catch(() => {});
+        if (prisma.loadActivity) await prisma.loadActivity.deleteMany({ where: { loadId: { in: loadIds } } }).catch(() => {});
+        await prisma.load.deleteMany({ where: { id: { in: loadIds } } }).catch(() => {});
+      }
+    }
+
+    // Perform database deletion
+    await prisma.customer.delete({ where: { id: custId } });
 
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    return res.status(HTTP_STATUS.NO_CONTENT).send();
+    console.error('Customer delete error:', error);
+    next(error);
+  }
+};
+
+// Clean all customers for company context
+exports.deleteAll = async (req, res, next) => {
+  try {
+    const companyId = getEffectiveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
+    }
+    const where = (req.user?.role === 'SUPER_ADMIN' && !companyId) ? {} : { companyId };
+    
+    const customers = await prisma.customer.findMany({ where, select: { id: true } }).catch(() => []);
+    const custIds = customers.map(c => c.id);
+
+    if (custIds.length > 0) {
+      if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { customerId: { in: custIds } } }).catch(() => {});
+      if (prisma.loadItem) await prisma.loadItem.deleteMany({ where: { customerId: { in: custIds } } }).catch(() => {});
+      if (prisma.inboundReceipt) await prisma.inboundReceipt.deleteMany({ where: { customerId: { in: custIds } } }).catch(() => {});
+      if (prisma.load) await prisma.load.updateMany({ where: { customerId: { in: custIds } }, data: { customerId: null } }).catch(() => {});
+      await prisma.customer.deleteMany({ where: { id: { in: custIds } } }).catch(() => {});
+    }
+
+    return sendSuccess(res, { message: 'All customers cleared successfully' });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -278,12 +352,18 @@ exports.addContact = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { firstName, lastName, role, email, phone, isPrimary } = req.body;
+    const companyId = getEffectiveCompanyId(req);
 
     if (!firstName) {
       return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'First name is required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    const customer = await prisma.customer.findUnique({ where: { id } });
+    const where = { id };
+    if (req.user?.role !== 'SUPER_ADMIN' && companyId) {
+      where.companyId = companyId;
+    }
+
+    const customer = await prisma.customer.findFirst({ where });
     if (!customer) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Customer not found' }, HTTP_STATUS.NOT_FOUND);
     }
@@ -306,7 +386,7 @@ exports.addContact = async (req, res, next) => {
     };
 
     const updatedCustomer = await prisma.customer.update({
-      where: { id },
+      where: { id: customer.id },
       data: updateData
     });
 
@@ -323,7 +403,13 @@ exports.addContact = async (req, res, next) => {
 exports.getContacts = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const customer = await prisma.customer.findUnique({ where: { id } });
+    const companyId = getEffectiveCompanyId(req);
+    const where = { id };
+    if (req.user?.role !== 'SUPER_ADMIN' && companyId) {
+      where.companyId = companyId;
+    }
+
+    const customer = await prisma.customer.findFirst({ where });
     if (!customer) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Customer not found' }, HTTP_STATUS.NOT_FOUND);
     }

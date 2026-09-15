@@ -7,18 +7,24 @@ let prisma;
 try {
   const dbUrl = process.env.DATABASE_URL || 'mysql://root:@127.0.0.1:3306/hero-logistic';
   const urlObj = new URL(dbUrl);
-  
-  if (!urlObj.searchParams.has('connectionLimit')) urlObj.searchParams.set('connectionLimit', '50');
-  if (!urlObj.searchParams.has('acquireTimeout')) urlObj.searchParams.set('acquireTimeout', '30000');
-  if (!urlObj.searchParams.has('connectTimeout')) urlObj.searchParams.set('connectTimeout', '30000');
-  if (!urlObj.searchParams.has('idleTimeout')) urlObj.searchParams.set('idleTimeout', '30000');
-  if (!urlObj.searchParams.has('allowPublicKeyRetrieval')) urlObj.searchParams.set('allowPublicKeyRetrieval', 'true');
+  const host = (urlObj.hostname === 'localhost' || !urlObj.hostname) ? '127.0.0.1' : urlObj.hostname;
+  const port = Number(urlObj.port) || 3306;
+  const user = urlObj.username || 'root';
+  const password = urlObj.password || '';
+  const database = urlObj.pathname.replace(/^\//, '') || 'hero-logistic';
 
-  const adapter = new PrismaMariaDb(urlObj.toString());
+  const adapter = new PrismaMariaDb({
+    host,
+    port,
+    user,
+    password,
+    database,
+    connectionLimit: 25,
+    allowPublicKeyRetrieval: true
+  });
   prisma = new PrismaClient({ adapter });
 } catch (err) {
-  console.warn('PrismaMariaDb adapter initialization warning, using standard PrismaClient:', err?.message);
-  prisma = new PrismaClient();
+  console.warn('Prisma client initialization error:', err?.message);
 }
 
 module.exports = prisma;

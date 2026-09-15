@@ -3,17 +3,29 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const getEffectiveCompanyId = (req) => {
+  return req.tenantId || req.user?.companyId || req.user?.tenantId || null;
+};
+
 // Get all InboundReceipts with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    
-    // Optional: Inject tenant scope here if applicable
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const companyId = getEffectiveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.warehouse = { branch: { companyId } };
+    } else if (req.query.companyId) {
+      where.warehouse = { branch: { companyId: req.query.companyId } };
+    }
 
     const [data, total] = await Promise.all([
       prisma.inboundReceipt.findMany({
-        where, skip, take, orderBy
+        where, skip, take, orderBy,
+        include: { warehouse: true }
       }),
       prisma.inboundReceipt.count({ where })
     ]);
@@ -28,10 +40,17 @@ exports.getAll = async (req, res, next) => {
 // Get single InboundReceipt by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
 
-    const data = await prisma.inboundReceipt.findFirst({ where });
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'InboundReceipt not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.warehouse = { branch: { companyId } };
+    }
+
+    const data = await prisma.inboundReceipt.findFirst({ where, include: { warehouse: true } });
     
     if (!data) {
       return sendError(res, {
@@ -57,39 +76,53 @@ exports.create = async (req, res, next) => {
       driverName,
       vehicleDetails, vehicleRef,
       receivingDepot,
-      zone, row, bay,
       items = [],
-      status = 'Completed'
+      status = 'Completed',
+      warehouseId
     } = req.body;
 
-    const targetReceiptNo = receiptNumber || receiptNo || `GR-${Math.floor(1000 + Math.random() * 9000)}`;
-    const targetSupplier = supplierName || supplier || 'ABC Motors';
-    const targetVehicle = vehicleDetails || vehicleRef || 'TRK-101 / TRL-309';
+    const companyId = getEffectiveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
+    }
 
-    // Get default warehouse
-    let defaultWh = await prisma.warehouse.findFirst();
-    if (!defaultWh) {
-      const comp = await prisma.company.findFirst();
-      const br = await prisma.branch.findFirst();
-      defaultWh = await prisma.warehouse.create({
-        data: {
-          code: 'WH-001',
-          name: receivingDepot || 'Sydney Depot Main Yard',
-          branchId: br?.id || (await prisma.branch.create({ data: { name: 'Main Hub', companyId: comp.id } })).id
-        }
+    const targetReceiptNo = receiptNumber || receiptNo || `GR-${Math.floor(1000 + Math.random() * 9000)}`;
+    const targetSupplier = supplierName || supplier || 'Supplier';
+    const targetVehicle = vehicleDetails || vehicleRef || 'N/A';
+
+    let targetWarehouseId = warehouseId;
+    if (!targetWarehouseId) {
+      const wh = await prisma.warehouse.findFirst({
+        where: companyId ? { branch: { companyId } } : {}
       });
+      if (wh) {
+        targetWarehouseId = wh.id;
+      } else if (companyId) {
+        let br = await prisma.branch.findFirst({ where: { companyId } });
+        if (!br) {
+          br = await prisma.branch.create({ data: { name: 'Main Depot', companyId } });
+        }
+        const createdWh = await prisma.warehouse.create({
+          data: { code: `WH-${Date.now().toString().slice(-4)}`, name: receivingDepot || 'Main Depot', branchId: br.id }
+        });
+        targetWarehouseId = createdWh.id;
+      }
+    }
+
+    if (!targetWarehouseId) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Warehouse context required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
     const data = await prisma.inboundReceipt.create({
       data: {
         receiptNo: targetReceiptNo,
         supplier: targetSupplier,
-        referenceNote: referenceNote || 'DEL-887654',
+        referenceNote: referenceNote || 'N/A',
         transportType: transportType || 'Truck',
-        driverName: driverName || 'John Smith',
+        driverName: driverName || 'Staff',
         vehicleRef: targetVehicle,
         status,
-        warehouseId: defaultWh.id,
+        warehouseId: targetWarehouseId,
         receivingDate: new Date()
       }
     });
@@ -100,42 +133,29 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// Update InboundReceipt with Optimistic Concurrency check
+// Update InboundReceipt with Concurrency check
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
-    
+    const companyId = getEffectiveCompanyId(req);
     const where = { id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
 
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'InboundReceipt not found' }, HTTP_STATUS.NOT_FOUND);
+      where.warehouse = { branch: { companyId } };
     }
 
-    try {
-      const data = await prisma.inboundReceipt.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'InboundReceipt not found'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      throw e;
+    const existing = await prisma.inboundReceipt.findFirst({ where });
+    if (!existing) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'InboundReceipt not found' }, HTTP_STATUS.NOT_FOUND);
     }
+
+    const data = await prisma.inboundReceipt.update({
+      where: { id: existing.id },
+      data: updateData
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
@@ -144,20 +164,21 @@ exports.update = async (req, res, next) => {
 // Delete InboundReceipt
 exports.delete = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
 
-    await prisma.inboundReceipt.delete({ where });
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      where.warehouse = { branch: { companyId } };
+    }
+
+    const existing = await prisma.inboundReceipt.findFirst({ where });
+    if (existing) {
+      await prisma.inboundReceipt.delete({ where: { id: existing.id } });
+    }
     
-    // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    if (error.code === 'P2025') {
-      return sendError(res, {
-        code: ERROR_CODES.NOT_FOUND,
-        message: 'InboundReceipt not found'
-      }, HTTP_STATUS.NOT_FOUND);
-    }
-    next(error);
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };

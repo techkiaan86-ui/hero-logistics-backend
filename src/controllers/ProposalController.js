@@ -79,7 +79,7 @@ exports.getAll = async (req, res, next) => {
         orderBy: { name: 'asc' }
       }),
       prisma.subscriptionPlan ? prisma.subscriptionPlan.findMany().catch(() => []) : [],
-      prisma.branch ? prisma.branch.findMany({ select: { id: true, name: true, location: true } }).catch(() => []) : []
+      prisma.branch ? prisma.branch.findMany({ where: (req.user?.role !== 'SUPER_ADMIN' && req.user?.companyId) ? { companyId: req.user.companyId } : {}, select: { id: true, name: true, location: true } }).catch(() => []) : []
     ]);
 
     const formattedData = data.map(formatProposal);

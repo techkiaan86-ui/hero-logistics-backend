@@ -28,14 +28,19 @@ exports.resolveTenant = async (req, res, next) => {
   }
 };
 
-/**
- * Helper to get Prisma tenant filter for queries
- */
+exports.resolveCompanyId = (req) => {
+  return req.tenantId || req.user?.companyId || req.user?.tenantId || (req.user?.role === 'SUPER_ADMIN' && req.query?.companyId ? req.query.companyId : null);
+};
+
 exports.getTenantWhere = (req) => {
-  if (req.tenantId) {
-    return { companyId: req.tenantId };
+  const companyId = exports.resolveCompanyId(req);
+  if (companyId) {
+    return { companyId };
   }
-  return {};
+  if (req.user && req.user.role === 'SUPER_ADMIN') {
+    return {};
+  }
+  return { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
 };
 
 /**

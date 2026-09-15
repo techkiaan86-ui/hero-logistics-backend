@@ -13,6 +13,10 @@ const TENANT_ROLES = [
   'COMPANY_ADMIN', 'DISPATCHER', 'DRIVER', 'WAREHOUSE', 'YARD', 'ACCOUNTS', 'CUSTOMER', 'USER'
 ];
 
+const getEffectiveCompanyId = (req) => {
+  return req.tenantId || req.user?.companyId || req.user?.tenantId || null;
+};
+
 // Helper to map UI role string to DB Role enum
 const mapRoleEnum = (roleStr) => {
   if (!roleStr) return 'COMPANY_ADMIN';
@@ -44,9 +48,15 @@ const mapStatusEnum = (statusStr) => {
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const companyId = getEffectiveCompanyId(req);
 
-    if (req.tenantId) {
-      where.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
     }
 
     const [data, total] = await Promise.all([
@@ -69,9 +79,14 @@ exports.getAll = async (req, res, next) => {
 // Get single User by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = getEffectiveCompanyId(req);
     const where = { id: req.params.id };
-    if (req.tenantId) {
-      where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'User not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
     }
 
     const data = await prisma.user.findFirst({ where });
@@ -92,7 +107,8 @@ exports.getById = async (req, res, next) => {
 // Create new User
 exports.create = async (req, res, next) => {
   try {
-    const { name, email, password, role, phone, status } = req.body;
+    const { name, email, password, role, phone, status, passwordSetupType } = req.body;
+    const effectiveCompanyId = getEffectiveCompanyId(req);
 
     if (!email) {
       return sendError(res, {
@@ -103,35 +119,35 @@ exports.create = async (req, res, next) => {
 
     const roleEnum = mapRoleEnum(role);
     const statusEnum = mapStatusEnum(status);
-    const rawPassword = password || 'HeroPass@123';
+    const rawPassword = (passwordSetupType === 'EMAIL_LINK' || !password)
+      ? `HeroSetup_${Date.now().toString(36)}!${Math.floor(Math.random() * 1000)}`
+      : password;
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     let companyId = req.body.companyId;
-    if (req.tenantId) {
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
       if (PLATFORM_ROLES.includes(roleEnum)) {
         return sendError(res, {
           code: ERROR_CODES.UNAUTHORIZED_ACCESS,
           message: 'You cannot create platform staff users.'
         }, HTTP_STATUS.FORBIDDEN);
       }
-      companyId = req.tenantId;
-    } else if (PLATFORM_ROLES.includes(roleEnum)) {
-      companyId = null;
-    } else if (TENANT_ROLES.includes(roleEnum)) {
-      if (!companyId) {
-        const comp = await prisma.company.findFirst();
-        if (comp) {
-          companyId = comp.id;
-        } else {
-          return sendError(res, {
-            code: ERROR_CODES.VALIDATION_ERROR,
-            message: 'Company context (companyId) is required for tenant users.'
-          }, HTTP_STATUS.BAD_REQUEST);
-        }
+      if (!effectiveCompanyId) {
+        return sendError(res, {
+          code: ERROR_CODES.UNAUTHORIZED_ACCESS,
+          message: 'Company context is required to create tenant users.'
+        }, HTTP_STATUS.FORBIDDEN);
+      }
+      companyId = effectiveCompanyId;
+    } else {
+      if (PLATFORM_ROLES.includes(roleEnum)) {
+        companyId = null;
+      } else {
+        companyId = req.body.companyId || effectiveCompanyId;
       }
     }
 
-    const userCount = await prisma.user.count();
     const userCode = `US-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`;
 
     const data = await prisma.user.create({
@@ -171,10 +187,14 @@ exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, email, password, role, phone, status, companyId, dob, address, emergencyContact } = req.body;
+    const effectiveCompanyId = getEffectiveCompanyId(req);
 
-    if (req.tenantId) {
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!effectiveCompanyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'User not found' }, HTTP_STATUS.NOT_FOUND);
+      }
       const existingUser = await prisma.user.findFirst({
-        where: { id, companyId: req.tenantId }
+        where: { id, companyId: effectiveCompanyId }
       });
       if (!existingUser) {
         return sendError(res, {
@@ -193,7 +213,7 @@ exports.update = async (req, res, next) => {
     let roleEnum = undefined;
     if (role !== undefined) {
       roleEnum = mapRoleEnum(role);
-      if (req.tenantId && PLATFORM_ROLES.includes(roleEnum)) {
+      if (req.user?.role !== 'SUPER_ADMIN' && PLATFORM_ROLES.includes(roleEnum)) {
         return sendError(res, {
           code: ERROR_CODES.UNAUTHORIZED_ACCESS,
           message: 'You cannot assign platform staff roles.'
@@ -212,8 +232,8 @@ exports.update = async (req, res, next) => {
       if (PLATFORM_ROLES.includes(currentRole)) {
         updateData.companyId = null;
       } else {
-        if (req.tenantId) {
-          updateData.companyId = req.tenantId;
+        if (req.user?.role !== 'SUPER_ADMIN') {
+          updateData.companyId = effectiveCompanyId;
         } else if (companyId !== undefined) {
           updateData.companyId = companyId || null;
         }
@@ -306,7 +326,6 @@ exports.updateProfile = async (req, res, next) => {
       updateData.email = email.trim().toLowerCase();
     }
 
-    // Password change handling
     if (newPassword && newPassword.trim().length > 0) {
       if (currentPassword) {
         const isMatch = await bcrypt.compare(currentPassword, currentUser.password);
@@ -337,15 +356,16 @@ exports.updateProfile = async (req, res, next) => {
   }
 };
 
-
 // Delete User
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const effectiveCompanyId = getEffectiveCompanyId(req);
 
-    if (req.tenantId) {
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!effectiveCompanyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
       const existingUser = await prisma.user.findFirst({
-        where: { id, companyId: req.tenantId }
+        where: { id, companyId: effectiveCompanyId }
       });
       if (!existingUser) {
         return sendError(res, {
@@ -355,22 +375,17 @@ exports.delete = async (req, res, next) => {
       }
     }
 
-    const where = { id };
-    
-    // Clean up safe dependent records
     await prisma.userSession.deleteMany({ where: { userId: id } });
     await prisma.shift.deleteMany({ where: { userId: id } });
-    
-    // Disconnect optional relations
     await prisma.driver.updateMany({ where: { userId: id }, data: { userId: null } });
 
-    await prisma.user.delete({ where });
+    await prisma.user.delete({ where: { id } });
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
     if (error.code === 'P2003') {
       return sendError(res, {
         code: ERROR_CODES.VALIDATION_ERROR,
-        message: 'Cannot delete user because they have associated records (e.g. support tickets, messages, or reports). Please suspend the user instead.'
+        message: 'Cannot delete user because they have associated records. Please suspend the user instead.'
       }, HTTP_STATUS.BAD_REQUEST);
     }
     if (error.code === 'P2025') {
@@ -382,4 +397,3 @@ exports.delete = async (req, res, next) => {
     next(error);
   }
 };
-

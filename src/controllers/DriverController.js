@@ -7,8 +7,17 @@ const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const companyId = req.tenantId || req.user?.companyId;
     
-    if (req.tenantId) where.companyId = req.tenantId;
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
+
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -36,8 +45,18 @@ exports.getAll = async (req, res, next) => {
 // Get single Driver by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = req.tenantId || req.user?.companyId;
     const where = { id: req.params.id };
-    if (req.tenantId) where.companyId = req.tenantId;
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.NOT_FOUND,
+          message: 'Driver not found'
+        }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       where.branchId = req.user.branchId;
     }
@@ -96,11 +115,11 @@ const cleanAvatarUrl = (url) => {
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    if (req.tenantId) {
-      payload.companyId = req.tenantId;
+    const effectiveCompanyId = req.tenantId || req.user?.companyId || (req.user?.role === 'SUPER_ADMIN' ? payload.companyId : null);
+    if (!effectiveCompanyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
     }
-
-    const effectiveCompanyId = payload.companyId || (await prisma.company.findFirst())?.id;
+    payload.companyId = effectiveCompanyId;
     let branchIdVal = payload.branchId || null;
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       branchIdVal = req.user.branchId;
@@ -445,7 +464,7 @@ exports.update = async (req, res, next) => {
     if (!updateData.branchId && (req.body.branch || req.body.Branch)) {
       const bName = String(req.body.branch || req.body.Branch).trim();
       if (bName && bName !== '—') {
-        const effCompanyId = req.tenantId || (await prisma.company.findFirst())?.id;
+        const effCompanyId = req.tenantId || req.user?.companyId;
         let foundBranch = await prisma.branch.findFirst({
           where: { name: { equals: bName }, companyId: effCompanyId }
         }).catch(() => null);
@@ -510,15 +529,23 @@ exports.update = async (req, res, next) => {
 exports.delete = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
+    const where = { OR: [{ id }, { driverCode: id }] };
 
-    // Find driver by ID or driverCode
-    const existing = await prisma.driver.findFirst({
-      where: {
-        OR: [{ id }, { driverCode: id }]
-      }
-    });
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      where.companyId = companyId;
+    }
 
-    const driverId = existing ? existing.id : id;
+    // Find driver by ID or driverCode within tenant scope
+    const existing = await prisma.driver.findFirst({ where });
+
+    if (!existing) {
+      return res.status(HTTP_STATUS.NO_CONTENT).send();
+    }
+
+    const driverId = existing.id;
 
     // Clean up or detach all child/related records before deleting driver
     if (prisma.document?.deleteMany) await prisma.document.deleteMany({ where: { driverId } }).catch(() => {});
@@ -535,15 +562,12 @@ exports.delete = async (req, res, next) => {
 
     // Force permanent delete from MySQL database
     await prisma.driver.deleteMany({
-      where: {
-        OR: [{ id: driverId }, { driverCode: driverId }]
-      }
+      where: { id: driverId }
     });
     
     // 204 No Content for successful delete
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
-    await prisma.driver.deleteMany({ where: { id: req.params.id } }).catch(() => {});
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   }
 };

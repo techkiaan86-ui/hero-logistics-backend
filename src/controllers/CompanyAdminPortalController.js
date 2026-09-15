@@ -2,14 +2,7 @@ const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
-const { getTenantWhere } = require('../middlewares/tenantResolver');
-
-/**
- * Utility helper to resolve effective companyId (may return null for reads)
- */
-function resolveCompanyId(req) {
-  return req.tenantId || req.user?.companyId || req.user?.tenantId || null;
-}
+const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
 
 /**
  * Like resolveCompanyId but guarantees a non-null companyId for write operations.
@@ -18,28 +11,26 @@ function resolveCompanyId(req) {
 async function resolveRequiredCompanyId(req) {
   const id = resolveCompanyId(req);
   if (id) return id;
-  // Fallback: pick the first company (covers super-admin / dev scenarios)
-  const first = await prisma.company.findFirst({ select: { id: true } });
-  if (!first) throw new Error('No company found in database. Please seed a company first.');
-  return first.id;
+  if (req.user?.role === 'SUPER_ADMIN' && req.query?.companyId) return req.query.companyId;
+  throw new Error('Tenant company context required for this operation.');
 }
 
 /**
  * Helper to find existing load by ID or loadRef, or auto-create if not present
  */
-async function resolveOrCreateLoad(id, companyId) {
+async function resolveOrCreateLoad(id, req) {
   if (!id) throw new Error('Load ID or reference is required');
+  const tenantWhere = getTenantWhere(req);
   let target = await prisma.load.findFirst({
-    where: { OR: [{ id }, { loadRef: id }] }
+    where: {
+      OR: [{ id }, { loadRef: id }],
+      ...tenantWhere
+    }
   });
 
   if (!target) {
-    let effectiveCompanyId = companyId;
-    if (!effectiveCompanyId) {
-      const firstComp = await prisma.company.findFirst({ select: { id: true } });
-      effectiveCompanyId = firstComp ? firstComp.id : '1c058eaa-4e42-4713-a26c-08d35ad626fb';
-    }
-
+    const companyId = resolveCompanyId(req);
+    if (!companyId) throw new Error('Company context is required to create a load.');
     const isValidUuid = typeof id === 'string' && id.length === 36 && id.includes('-');
     const crypto = require('crypto');
 
@@ -49,7 +40,7 @@ async function resolveOrCreateLoad(id, companyId) {
         loadRef: id.startsWith('PO-') ? id : `PO-${Math.floor(100000 + Math.random() * 900000)}`,
         type: 'General Freight',
         status: 'DRAFT',
-        companyId: effectiveCompanyId
+        companyId
       }
     });
   }
@@ -87,9 +78,9 @@ const sanitizeLoadPriority = (priority) => {
 // ----------------------------------------------------------------------
 exports.getLoads = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    if (companyId) where.companyId = companyId;
+    const tenantWhere = getTenantWhere(req);
+    Object.assign(where, tenantWhere);
 
     const [data, total] = await Promise.all([
       prisma.load.findMany({
@@ -113,10 +104,9 @@ exports.getLoads = async (req, res, next) => {
 
 exports.createLoad = async (req, res, next) => {
   try {
-    let companyId = await resolveCompanyId(req);
-    if (!companyId) {
-      const firstComp = await prisma.company.findFirst();
-      companyId = firstComp ? firstComp.id : '1c058eaa-4e42-4713-a26c-08d35ad626fb';
+    const companyId = resolveCompanyId(req) || (req.user?.role === 'SUPER_ADMIN' ? req.body.companyId : null);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required to create loads' }, HTTP_STATUS.FORBIDDEN);
     }
     const { stops, items, ...rawPayload } = req.body;
     const payload = { ...rawPayload };
@@ -167,18 +157,11 @@ exports.createLoad = async (req, res, next) => {
           ...(companyId && { companyId })
         }
       });
-      if (!foundCust) {
-        foundCust = await prisma.customer.create({
-          data: {
-            id: require('crypto').randomUUID(),
-            name: custName,
-            companyId
-          }
-        });
+      if (foundCust) {
+        payload.customerId = foundCust.id;
       }
-      payload.customerId = foundCust.id;
+      delete payload.customer;
     }
-    delete payload.customer;
 
     // Resolve Driver
     if (payload.driver && !payload.driverId) {
@@ -269,8 +252,7 @@ exports.createLoad = async (req, res, next) => {
 exports.updateLoad = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const companyId = await resolveCompanyId(req);
-    const targetLoad = await resolveOrCreateLoad(id, companyId);
+    const targetLoad = await resolveOrCreateLoad(id, req);
 
     const payload = { ...req.body };
     if (payload.status) payload.status = sanitizeLoadStatus(payload.status);
@@ -292,13 +274,21 @@ exports.updateLoad = async (req, res, next) => {
 exports.deleteLoad = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const tenantWhere = getTenantWhere(req);
     
-    // Find target load by ID, loadRef, or draftId
+    // Find target load by ID, loadRef, or draftId within tenant scope
     const targetLoad = await prisma.load.findFirst({
-      where: { OR: [{ id }, { loadRef: id }, { draftId: id }] }
+      where: {
+        OR: [{ id }, { loadRef: id }, { draftId: id }],
+        ...tenantWhere
+      }
     }).catch(() => null);
 
-    const targetId = targetLoad ? targetLoad.id : id;
+    if (!targetLoad) {
+      return sendSuccess(res, { id, message: 'Load deleted or not found' });
+    }
+
+    const targetId = targetLoad.id;
 
     // Cascade clean-up of child records to maintain foreign key integrity
     if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { loadId: targetId } }).catch(() => null);
@@ -323,8 +313,12 @@ exports.deleteLoad = async (req, res, next) => {
 exports.getLoadInvoices = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const tenantWhere = getTenantWhere(req);
     const targetLoad = await prisma.load.findFirst({
-      where: { OR: [{ id }, { loadRef: id }] }
+      where: {
+        OR: [{ id }, { loadRef: id }],
+        ...tenantWhere
+      }
     });
     if (!targetLoad) return sendSuccess(res, []);
 
@@ -375,18 +369,6 @@ exports.autoGenerateLoadInvoice = async (loadId, companyId, customAmount = null)
         where: targetCompanyId ? { companyId: targetCompanyId } : {}
       }).catch(() => null);
 
-      if (!cust) {
-        const compId = targetCompanyId || (await prisma.company.findFirst().then(c => c?.id).catch(() => null));
-        if (compId) {
-          cust = await prisma.customer.create({
-            data: {
-              id: require('crypto').randomUUID(),
-              name: 'General Customer',
-              companyId: compId
-            }
-          }).catch(() => null);
-        }
-      }
       if (cust) customerId = cust.id;
     }
 
@@ -546,26 +528,16 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
 exports.createLoadInvoice = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const companyId = await resolveCompanyId(req);
-    const targetLoad = await resolveOrCreateLoad(id, companyId);
+    const targetLoad = await resolveOrCreateLoad(id, req);
     const { amount, dueDateTerms, status } = req.body;
 
     let customerId = targetLoad.customerId;
     if (!customerId) {
       const custName = targetLoad.customerName || 'General Customer';
       let cust = await prisma.customer.findFirst({
-        where: { name: { contains: custName } }
+        where: { name: { contains: custName }, companyId: targetLoad.companyId }
       });
-      if (!cust) {
-        cust = await prisma.customer.create({
-          data: {
-            id: require('crypto').randomUUID(),
-            name: custName,
-            companyId: targetLoad.companyId
-          }
-        });
-      }
-      customerId = cust.id;
+      if (cust) customerId = cust.id;
     }
 
     let days = 7;
@@ -608,8 +580,12 @@ exports.createLoadInvoice = async (req, res, next) => {
 exports.deleteLoadInvoice = async (req, res, next) => {
   try {
     const { invoiceId } = req.params;
+    const tenantWhere = getTenantWhere(req);
     await prisma.customerInvoice.deleteMany({
-      where: { OR: [{ id: invoiceId }, { invoiceNumber: invoiceId }] }
+      where: {
+        OR: [{ id: invoiceId }, { invoiceNumber: invoiceId }],
+        ...(tenantWhere.companyId ? { load: { companyId: tenantWhere.companyId } } : {})
+      }
     });
     return sendSuccess(res, { id: invoiceId, message: 'Invoice deleted successfully' });
   } catch (error) { next(error); }
@@ -618,8 +594,12 @@ exports.deleteLoadInvoice = async (req, res, next) => {
 exports.getLoadDocuments = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const tenantWhere = getTenantWhere(req);
     const targetLoad = await prisma.load.findFirst({
-      where: { OR: [{ id }, { loadRef: id }] }
+      where: {
+        OR: [{ id }, { loadRef: id }],
+        ...tenantWhere
+      }
     });
     if (!targetLoad) return sendSuccess(res, []);
 
@@ -642,8 +622,7 @@ exports.getLoadDocuments = async (req, res, next) => {
 exports.createLoadDocument = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const companyId = await resolveCompanyId(req);
-    const targetLoad = await resolveOrCreateLoad(id, companyId);
+    const targetLoad = await resolveOrCreateLoad(id, req);
     const { documentType, fileName } = req.body;
 
     const crypto = require('crypto');
@@ -677,8 +656,7 @@ exports.createLoadDocument = async (req, res, next) => {
 // ----------------------------------------------------------------------
 exports.getLiveTracking = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
-    const whereScope = companyId ? { companyId } : {};
+    const whereScope = getTenantWhere(req);
 
     // Fetch all trucks, drivers, loads, branches in parallel
     const [vehicles, drivers, loads, branches, totalDelivered, onTimeDelivered] = await Promise.all([
@@ -844,7 +822,7 @@ exports.createDriver = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
     const payload = { ...req.body };
-    const effectiveCompanyId = companyId || payload.companyId || (await prisma.company.findFirst())?.id;
+    const effectiveCompanyId = companyId || payload.companyId;
 
     let validStatus = 'AVAILABLE';
     if (payload.status) {
@@ -902,7 +880,7 @@ exports.createVehicle = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
     const rawPayload = { ...req.body };
-    const effectiveCompanyId = companyId || rawPayload.companyId || (await prisma.company.findFirst())?.id;
+    const effectiveCompanyId = companyId || rawPayload.companyId;
 
     let validCategory = 'TRUCK';
     if (rawPayload.category) {
@@ -951,10 +929,13 @@ exports.createVehicle = async (req, res, next) => {
 // ----------------------------------------------------------------------
 exports.getBranches = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
+    const companyId = resolveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendList(res, [], buildPaginationMeta(0, 1, 10));
+    }
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    // Strictly scope to this company's branches
-    if (companyId) where.companyId = companyId;
+    const tenantWhere = getTenantWhere(req);
+    Object.assign(where, tenantWhere);
 
     const [data, total] = await Promise.all([
       prisma.branch.findMany({
@@ -1050,7 +1031,26 @@ exports.deleteBranch = async (req, res, next) => {
 // ----------------------------------------------------------------------
 exports.getAssets = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
+    const companyId = resolveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, {
+        assets: [],
+        stats: {
+          totalAssets: 0,
+          active: 0,
+          maintenance: 0,
+          outOfService: 0,
+          expiringCompliance: 0,
+          expiredCount: 0,
+          compliantCount: 0,
+          assigned: 0,
+          unassigned: 0,
+          categoryCounts: {}
+        },
+        branches: []
+      });
+    }
+    const tenantWhere = getTenantWhere(req);
     const { search, category, type, branch, status } = req.query;
 
     const categoryVal = category || 'All';
@@ -1058,8 +1058,8 @@ exports.getAssets = async (req, res, next) => {
 
     const andConditions = [];
 
-    if (companyId) {
-      andConditions.push({ branch: { companyId } });
+    if (tenantWhere.companyId) {
+      andConditions.push({ branch: tenantWhere });
     }
 
     if (branch && branch !== 'All') {
@@ -1114,21 +1114,8 @@ exports.getAssets = async (req, res, next) => {
         orderBy: { createdAt: 'desc' }
       }),
       prisma.asset.count({ where }),
-      prisma.branch.findMany({ where: companyId ? { companyId } : {} })
+      prisma.branch.findMany({ where: tenantWhere })
     ]);
-
-    if (branches.length === 0) {
-      const defaultCompanyId = companyId || '1c058eaa-4e42-4713-a26c-08d35ad626fb';
-      await prisma.branch.createMany({
-        data: [
-          { name: 'Sydney Head Office', location: 'Eastern Creek, Sydney, NSW', companyId: defaultCompanyId },
-          { name: 'Melbourne Logistics Hub', location: 'Dandenong South, Melbourne, VIC', companyId: defaultCompanyId },
-          { name: 'Brisbane Transport Depot', location: 'Rocklea, Brisbane, QLD', companyId: defaultCompanyId },
-          { name: 'Perth Regional Yard', location: 'Welshpool, Perth, WA', companyId: defaultCompanyId }
-        ]
-      });
-      branches = await prisma.branch.findMany({ where: companyId ? { companyId } : {} });
-    }
 
     const sydneyPreset = { code: 'SYD-HO', address: 'Eastern Creek, Sydney, NSW', type: 'Head Office', phone: '+61 2 9832 0011', timeZone: 'Australia/Sydney (AEST)', manager: 'Sarah Mitchell', currency: 'AUD', established: '2018', photo: 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=600&auto=format&fit=crop&q=60' };
 
@@ -1850,8 +1837,11 @@ exports.updateFuelSurcharge = async (req, res, next) => {
 // â”€â”€ Customer Special Rates: pull from real Customer table
 exports.getCustomerRates = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
-    const where = companyId ? { companyId } : {};
+    const companyId = resolveCompanyId(req);
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, []);
+    }
+    const where = getTenantWhere(req);
     const customers = await prisma.customer.findMany({
       where,
       select: {
@@ -2234,23 +2224,13 @@ exports.createInvoice = async (req, res, next) => {
       return sendSuccess(res, { ...billing, entryType: entryType || 'General', entityName }, HTTP_STATUS.CREATED);
     }
 
-    // Invoice / Credit Note â†’ CustomerInvoice
+    // Invoice / Credit Note -> CustomerInvoice
     let customer = null;
     if (entityName) {
       customer = await prisma.customer.findFirst({ where: { name: { contains: entityName }, companyId } });
-      if (!customer) {
-        customer = await prisma.customer.create({
-          data: { id: crypto.randomUUID(), name: entityName, companyId }
-        }).catch(() => null);
-      }
     }
     if (!customer) {
       customer = await prisma.customer.findFirst({ where: { companyId } });
-    }
-    if (!customer) {
-      customer = await prisma.customer.create({
-        data: { id: crypto.randomUUID(), name: entityName || 'General Customer', companyId }
-      });
     }
 
     const invoice = await prisma.customerInvoice.create({
@@ -2595,9 +2575,8 @@ exports.sendMessage = async (req, res, next) => {
   try {
     const { conversationId, content, recipientId, recipientName } = req.body;
     let compId = await resolveCompanyId(req);
-    if (!compId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) compId = comp.id;
+    if (!compId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
     }
 
     let user = await prisma.user.findFirst({ where: compId ? { companyId: compId } : {} });
@@ -2651,10 +2630,6 @@ exports.createBroadcast = async (req, res, next) => {
   try {
     const { title, content, type, channel, recipients } = req.body;
     let compId = await resolveCompanyId(req);
-    if (!compId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) compId = comp.id;
-    }
 
     const broadcastLog = {
       id: require('crypto').randomUUID(),
@@ -2955,10 +2930,6 @@ exports.getRolesAndPermissions = async (req, res, next) => {
 exports.getSettings = async (req, res, next) => {
   try {
     let companyId = await resolveCompanyId(req);
-    if (!companyId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) companyId = comp.id;
-    }
 
     if (!companyId) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Company context not found' }, HTTP_STATUS.NOT_FOUND);
@@ -3007,10 +2978,6 @@ exports.getSettings = async (req, res, next) => {
 exports.updateSettings = async (req, res, next) => {
   try {
     let companyId = await resolveCompanyId(req);
-    if (!companyId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) companyId = comp.id;
-    }
 
     const {
       companyName, tradingName, abn, acn, registeredAddress,
@@ -3120,10 +3087,6 @@ exports.getSafetyChecklists = async (req, res, next) => {
 exports.createSafetyChecklist = async (req, res, next) => {
   try {
     let companyId = await resolveCompanyId(req);
-    if (!companyId) {
-      const comp = await prisma.company.findFirst();
-      if (comp) companyId = comp.id;
-    }
 
     let driverId = req.body.driverId;
     if (!driverId) {
@@ -3233,9 +3196,9 @@ exports.updateDeliveryIssueStatus = async (req, res, next) => {
 // ----------------------------------------------------------------------
 exports.getCustomers = async (req, res, next) => {
   try {
-    const companyId = await resolveCompanyId(req);
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    if (companyId) where.companyId = companyId;
+    const tenantWhere = getTenantWhere(req);
+    Object.assign(where, tenantWhere);
 
     const [data, total] = await Promise.all([
       prisma.customer.findMany({ where, skip, take, orderBy, include: { accountManager: true, loads: true } }),
@@ -3248,11 +3211,11 @@ exports.getCustomers = async (req, res, next) => {
 exports.deleteCustomer = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const companyId = await resolveCompanyId(req);
+    const tenantWhere = getTenantWhere(req);
     const targetCustomer = await prisma.customer.findFirst({
       where: {
         OR: [{ id }, { name: id }],
-        ...(companyId && { companyId })
+        ...tenantWhere
       }
     });
 
@@ -3998,12 +3961,14 @@ exports.createWarehouse = async (req, res, next) => {
       });
     }
     if (!branch) {
-      const firstCompany = companyId ? await prisma.company.findUnique({ where: { id: companyId } }) : await prisma.company.findFirst();
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required to create warehouse branch' }, HTTP_STATUS.FORBIDDEN);
+      }
       branch = await prisma.branch.create({
         data: {
-          name: payload.branch || 'Sydney Main Depot',
-          location: payload.branch || 'Sydney Main Depot',
-          companyId: firstCompany ? firstCompany.id : (await prisma.company.findFirst())?.id
+          name: payload.branch || 'Main Branch',
+          location: payload.branch || 'Main Depot',
+          companyId
         }
       });
     }

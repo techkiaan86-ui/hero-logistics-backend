@@ -1,23 +1,43 @@
 const prisma = require('../utils/prismaClient');
 const { sendSuccess } = require('../utils/apiResponse');
-const { getTenantWhere } = require('../middlewares/tenantResolver');
+const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
 
 exports.getDashboardMetrics = async (req, res, next) => {
   try {
-    const tenantFilter = getTenantWhere(req);
-    const companyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
+    const companyId = resolveCompanyId(req);
 
-    // If companyId is not available, attempt to grab first active company (for dev/demo context)
-    let effectiveCompanyId = companyId;
-    if (!effectiveCompanyId) {
-      const firstCompany = await prisma.company.findFirst();
-      if (firstCompany) effectiveCompanyId = firstCompany.id;
+    if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, {
+        kpis: {
+          totalLoads: 0,
+          activeLoads: 0,
+          totalDrivers: 0,
+          activeFleet: 0,
+          totalBranches: 0,
+          totalWarehouses: 0,
+          totalCustomers: 0,
+          openTicketsCount: 0,
+          pendingRevenue: '$0.00'
+        },
+        loadStatusData: [],
+        recentLoads: [],
+        pendingInvoices: [],
+        driverAlerts: [],
+        truckMaintenance: [],
+        recentTickets: [],
+        ticketStats: { open: 0, inProgress: 0, waiting: 0, resolved: 0 },
+        unreadMessages: []
+      });
     }
 
-    const whereScope = effectiveCompanyId ? { companyId: effectiveCompanyId } : {};
+    const whereScope = getTenantWhere(req);
 
-    const warehouseScope = effectiveCompanyId ? { branch: { companyId: effectiveCompanyId } } : {};
-    const invoiceScope = effectiveCompanyId ? { customer: { companyId: effectiveCompanyId } } : {};
+    const warehouseScope = whereScope.companyId
+      ? { branch: { companyId: whereScope.companyId } }
+      : (req.user?.role === 'SUPER_ADMIN' ? {} : { branch: { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' } });
+    const invoiceScope = whereScope.companyId
+      ? { customer: { companyId: whereScope.companyId } }
+      : (req.user?.role === 'SUPER_ADMIN' ? {} : { customer: { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' } });
 
     // 1. KPI Counts
     const [
@@ -181,7 +201,7 @@ exports.getDashboardMetrics = async (req, res, next) => {
     }));
 
     // 8. Unread Messages / Alerts
-    const messageScope = effectiveCompanyId ? { conversation: { companyId: effectiveCompanyId } } : {};
+    const messageScope = whereScope.companyId ? { conversation: { companyId: whereScope.companyId } } : {};
     const unreadMessagesRaw = await prisma.message.findMany({
       where: messageScope,
       take: 3,
