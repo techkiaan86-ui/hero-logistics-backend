@@ -4,10 +4,11 @@ const { DEFAULT_PAGINATION } = require('../config/constants');
  * Builds standard Prisma query options (where, skip, take, orderBy) from Express request query string.
  */
 exports.buildPrismaQuery = (query) => {
-  const { page, pageSize, sort, filter } = query;
+  const { page, pageSize, sort, filter, limit } = query;
 
-  // 1. Pagination
-  let take = parseInt(pageSize, 10) || DEFAULT_PAGINATION.PAGE_SIZE;
+  // 1. Pagination — support both ?pageSize=N and ?limit=N (common REST convention)
+  const rawSize = pageSize || limit;
+  let take = parseInt(rawSize, 10) || DEFAULT_PAGINATION.PAGE_SIZE;
   if (take > DEFAULT_PAGINATION.MAX_PAGE_SIZE) {
     take = DEFAULT_PAGINATION.MAX_PAGE_SIZE;
   }
@@ -29,9 +30,9 @@ exports.buildPrismaQuery = (query) => {
     orderBy = [{ createdAt: 'desc' }];
   }
 
-  // 3. Filtering
+  // 3. Filtering — strip all pagination/meta keys so they don't leak into Prisma where clause
   const where = {};
-  const reservedKeys = ['page', 'pageSize', 'sort', 'filter'];
+  const reservedKeys = ['page', 'pageSize', 'limit', 'offset', 'take', 'skip', 'sort', 'filter'];
 
   // Handle direct query keys like ?role=SALES
   for (const [key, value] of Object.entries(query)) {
