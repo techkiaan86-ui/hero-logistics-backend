@@ -914,8 +914,8 @@ exports.createVehicle = async (req, res, next) => {
     const vehicleData = {
       rego: regoVal,
       vin: vinVal,
-      make: rawPayload.make || 'Freightliner',
-      model: rawPayload.model || 'Cascadia',
+      make: rawPayload.make || null,
+      model: rawPayload.model || null,
       plate: rawPayload.plate || regoVal,
       category: validCategory,
       status: validStatus,

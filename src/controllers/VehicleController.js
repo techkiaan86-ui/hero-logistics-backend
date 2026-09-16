@@ -358,12 +358,12 @@ exports.create = async (req, res, next) => {
     const vehicleData = {
       rego: regoVal,
       vin: vinVal,
-      make: rawPayload.make || 'Freightliner',
-      model: rawPayload.model || 'Cascadia',
+      make: rawPayload.make || null,
+      model: rawPayload.model || null,
       plate: rawPayload.plate || regoVal,
       category: validCategory,
       status: validStatus,
-      fuelType: rawPayload.fuelType || 'Diesel',
+      fuelType: rawPayload.fuelType || null,
       odometerKm: odo
     };
 
@@ -408,8 +408,8 @@ exports.create = async (req, res, next) => {
         const fallbackData = {
           rego: regoVal,
           vin: vinVal,
-          make: rawPayload.make || 'Freightliner',
-          model: rawPayload.model || 'Cascadia',
+          make: rawPayload.make || null,
+          model: rawPayload.model || null,
           category: validCategory,
           status: validStatus,
           odometerKm: odo
