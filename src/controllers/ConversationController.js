@@ -184,10 +184,10 @@ exports.getDepotComms = async (req, res, next) => {
           dateGroup: new Date(m.createdAt).toLocaleDateString()
         })),
         driverInfo: {
-          mobile: '0412 345 678',
-          email: `${convName.toLowerCase().replace(/[^a-z0-9]/g, '')}@herologistics.com.au`,
-          empId: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-          license: 'HR Heavy Rigid'
+          mobile: conv.participants?.[0]?.user?.phone || null,
+          email: conv.participants?.[0]?.user?.email || null,
+          empId: conv.participants?.[0]?.user?.id || null,
+          license: null
         }
       };
     });

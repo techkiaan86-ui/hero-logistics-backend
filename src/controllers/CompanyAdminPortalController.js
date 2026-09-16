@@ -838,13 +838,13 @@ exports.createDriver = async (req, res, next) => {
       phone: payload.phone || payload.PhoneNumber || null,
       email: payload.email || payload.EmailAddress || null,
       avatarUrl: payload.avatarUrl || payload.photoPreview || payload.avatar || null,
-      driverCode: payload.driverCode || payload.EmployeeIDManualEditOption || `DRV-${Math.floor(10000 + Math.random() * 90000)}`,
-      licenseType: payload.licenceType || payload.licenseType || 'HR (Heavy Rigid)',
-      licenseNumber: payload.licenceNumber || payload.licenseNumber || `LIC-${Math.floor(10000 + Math.random() * 90000)}`,
+      driverCode: (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null,
+      licenseType: payload.licenceType || payload.licenseType || null,
+      licenseNumber: payload.licenceNumber || payload.licenseNumber || null,
       status: validStatus,
       role: payload.role || payload.driverRole || 'Driver',
-      category: payload.category || payload.driverCategory || 'Heavy Rig',
-      shift: payload.shift || 'Morning',
+      category: payload.category || payload.driverCategory || null,
+      shift: payload.shift || null,
       notes: payload.notes || null,
       companyId: effectiveCompanyId
     };
@@ -4341,5 +4341,39 @@ exports.updateProfile = async (req, res, next) => {
 
     delete updatedUser.password;
     return sendSuccess(res, updatedUser);
+  } catch (error) { next(error); }
+};
+
+// One-time cleanup: null out wrongly-defaulted driver fields
+exports.cleanupDriverDefaults = async (req, res, next) => {
+  try {
+    const fixed1 = await prisma.driver.updateMany({
+      where: { licenseType: 'HR (Heavy Rigid)', licenseNumber: { startsWith: 'LIC-' } },
+      data: { licenseType: null, licenseNumber: null }
+    });
+    const fixed2 = await prisma.driver.updateMany({
+      where: { category: 'Heavy Rig' },
+      data: { category: null }
+    });
+    const fixed3 = await prisma.driver.updateMany({
+      where: { shift: 'Morning' },
+      data: { shift: null }
+    });
+    const fixed4 = await prisma.driver.updateMany({
+      where: { firstName: { startsWith: 'DRV-' } },
+      data: { firstName: null }
+    });
+    const fixed5 = await prisma.driver.updateMany({
+      where: { driverCode: { startsWith: 'DRV-' } },
+      data: { driverCode: null }
+    });
+    return sendSuccess(res, {
+      message: 'Driver defaults cleanup complete',
+      licenseTypeCleared: fixed1.count,
+      categoryCleared: fixed2.count,
+      shiftCleared: fixed3.count,
+      firstNameCleared: fixed4.count,
+      driverCodeCleared: fixed5.count
+    });
   } catch (error) { next(error); }
 };

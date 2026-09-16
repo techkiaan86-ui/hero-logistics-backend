@@ -175,4 +175,7 @@ router.get('/subscription-billing/plans', ctrl.getAvailableSubscriptionPlans);
 router.get('/subscription-billing/invoices', ctrl.getSubscriptionInvoices);
 router.put('/subscription-billing/plan', ctrl.updateSubscriptionPlan);
 
+// Utility: one-time cleanup of wrongly-defaulted driver fields
+router.get('/cleanup-driver-defaults', ctrl.cleanupDriverDefaults);
+
 module.exports = router;

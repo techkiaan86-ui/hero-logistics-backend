@@ -164,10 +164,10 @@ exports.create = async (req, res, next) => {
     if (inputCode) {
       const existingCode = await prisma.driver.findFirst({ where: { driverCode: inputCode } });
       if (existingCode) {
-        inputCode = `DRV-${Math.floor(100000 + Math.random() * 900000)}`;
+        inputCode = `${inputCode}_${Math.floor(100 + Math.random() * 900)}`;
       }
     } else {
-      inputCode = `DRV-${Math.floor(100000 + Math.random() * 900000)}`;
+      inputCode = null;
     }
 
     const lType = payload.licenceType || payload.licenseType || payload.LicenceType || null;
@@ -253,7 +253,9 @@ exports.create = async (req, res, next) => {
     } catch (createErr) {
       if (createErr.code === 'P2002') {
         driverData.email = `driver_${Date.now()}@herologistics.com.au`;
-        driverData.driverCode = `DRV-${Math.floor(100000 + Math.random() * 900000)}`;
+        if (driverData.driverCode) {
+          driverData.driverCode = `${driverData.driverCode}_${Date.now()}`;
+        }
         const data = await prisma.driver.create({
           data: driverData,
           include: { branch: true, manager: true }
