@@ -95,20 +95,27 @@ const cleanAvatarUrl = (url) => {
   if (!url || typeof url !== 'string') return null;
   const trimmed = url.trim();
 
-  // Reject obviously broken/truncated URLs
-  if (trimmed.includes('...') || trimmed.endsWith('..') || trimmed === 'https://pravatar.cc/150?u...') return null;
+  // Reject obviously broken/truncated URLs or stock placeholders
+  if (trimmed.includes('...') || trimmed.endsWith('..') || trimmed.includes('pravatar') || trimmed.includes('unsplash')) return null;
 
-  // If it's a base64 data URL — store it directly in the DB (no disk write)
+  // If it's a base64 data URL — store it directly in DB if safe size
   if (trimmed.startsWith('data:image/')) {
     const matches = trimmed.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     if (matches && matches.length === 3) {
-      return trimmed; // Store data URL in DB — works on Railway and everywhere
+      if (trimmed.length > 300000) {
+        return null;
+      }
+      return trimmed;
     }
-    return null; // Malformed data URL
+    return null;
   }
 
-  return trimmed; // Regular http/https URL — return as-is
+  if (trimmed.length > 2000) return null;
+
+  return trimmed;
 };
+
+exports.cleanAvatarUrl = cleanAvatarUrl;
 
 
 // Create new Driver

@@ -3,6 +3,7 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
+const { cleanAvatarUrl } = require('./DriverController');
 
 /**
  * Like resolveCompanyId but guarantees a non-null companyId for write operations.
@@ -837,7 +838,7 @@ exports.createDriver = async (req, res, next) => {
       lastName: payload.lastName || payload.LastName || null,
       phone: payload.phone || payload.PhoneNumber || null,
       email: payload.email || payload.EmailAddress || null,
-      avatarUrl: payload.avatarUrl || payload.photoPreview || payload.avatar || null,
+      avatarUrl: cleanAvatarUrl(payload.avatarUrl || payload.photoPreview || payload.avatar || null),
       driverCode: (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null,
       licenseType: payload.licenceType || payload.licenseType || null,
       licenseNumber: payload.licenceNumber || payload.licenseNumber || null,

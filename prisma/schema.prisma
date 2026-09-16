@@ -851,7 +851,7 @@ model Driver {
   // 1. Personal Information
   firstName        String?
   lastName         String?
-  avatarUrl        String?   @db.Text
+  avatarUrl        String?   @db.LongText
   dob              DateTime?
   gender           String?
   nationality      String?
