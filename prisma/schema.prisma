@@ -865,7 +865,7 @@ model Driver {
 
   // 2. Employment Information
   status         DriverStatus   @default(AVAILABLE)
-  employmentType EmploymentType @default(FULL_TIME)
+  employmentType EmploymentType?
   role           String? // e.g., "Driver"
   category       String? // e.g., "Heavy Rig"
   joiningDate    DateTime?

@@ -846,9 +846,19 @@ exports.createDriver = async (req, res, next) => {
       role: payload.role || payload.driverRole || 'Driver',
       category: payload.category || payload.driverCategory || null,
       shift: payload.shift || null,
-      notes: payload.notes || null,
       companyId: effectiveCompanyId
     };
+
+    if (payload.employmentType || payload.EmploymentType) {
+      const e = String(payload.employmentType || payload.EmploymentType).toUpperCase().replace(/\s+/g, '_');
+      if (['FULL_TIME', 'PART_TIME', 'CASUAL', 'CONTRACTOR'].includes(e)) {
+        driverData.employmentType = e;
+      } else {
+        driverData.employmentType = null;
+      }
+    } else {
+      driverData.employmentType = null;
+    }
 
     if (payload.dob) {
       const d = new Date(payload.dob);

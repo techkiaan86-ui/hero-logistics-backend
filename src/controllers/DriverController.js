@@ -286,7 +286,8 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
     data.lastName = rawPayload.lastName || rawPayload.LastName || null;
   }
   if (rawPayload.driverCode !== undefined || rawPayload.EmployeeIDManualEditOption !== undefined) {
-    data.driverCode = rawPayload.driverCode || rawPayload.EmployeeIDManualEditOption || null;
+    const codeVal = (rawPayload.driverCode !== undefined ? rawPayload.driverCode : (rawPayload.EmployeeIDManualEditOption || '')).trim();
+    data.driverCode = codeVal ? codeVal : null;
   }
   if (rawPayload.avatarUrl !== undefined || rawPayload.avatar !== undefined || rawPayload.photoPreview !== undefined) {
     const rawAv = rawPayload.avatarUrl || rawPayload.avatar || rawPayload.photoPreview || null;
@@ -343,10 +344,17 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
     }
   }
 
-  if (rawPayload.employmentType || rawPayload.EmploymentType) {
-    const e = String(rawPayload.employmentType || rawPayload.EmploymentType).toUpperCase().replace(/\s+/g, '_');
-    if (['FULL_TIME', 'PART_TIME', 'CASUAL', 'CONTRACTOR'].includes(e)) {
-      data.employmentType = e;
+  if (rawPayload.employmentType !== undefined || rawPayload.EmploymentType !== undefined) {
+    const rawE = String(rawPayload.employmentType !== undefined ? rawPayload.employmentType : (rawPayload.EmploymentType || '')).trim();
+    if (!rawE) {
+      data.employmentType = null;
+    } else {
+      const e = rawE.toUpperCase().replace(/\s+/g, '_');
+      if (['FULL_TIME', 'PART_TIME', 'CASUAL', 'CONTRACTOR'].includes(e)) {
+        data.employmentType = e;
+      } else {
+        data.employmentType = null;
+      }
     }
   }
 
