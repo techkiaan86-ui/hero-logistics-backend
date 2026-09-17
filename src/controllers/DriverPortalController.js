@@ -7,13 +7,17 @@ const { saveBase64Image } = require('../utils/fileStorage');
  * Helper to resolve the driver record for the request
  */
 const resolveDriver = async (req) => {
-  const userId = req.user?.id;
+  const userId = req.user?.id || req.user?.userId;
   const userEmail = req.user?.email || req.user?.name;
+  const tenantCompanyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
 
-  // 1. Try finding by userId
+  // 1. Try finding by userId (scoped to company if known)
   if (userId) {
     const driverByUser = await prisma.driver.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        ...(tenantCompanyId && { companyId: tenantCompanyId })
+      },
       include: {
         currentVehicle: true,
         company: true,
@@ -23,18 +27,13 @@ const resolveDriver = async (req) => {
     if (driverByUser) return driverByUser;
   }
 
-  // 2. Try finding by email or email prefix
+  // 2. Try finding by exact email
   if (userEmail) {
     const cleanEmail = String(userEmail).toLowerCase().trim();
-    const prefix = cleanEmail.split('@')[0];
     const driverByEmail = await prisma.driver.findFirst({
       where: {
-        OR: [
-          { email: cleanEmail },
-          { email: { contains: prefix } },
-          { firstName: { contains: prefix } },
-          { lastName: { contains: prefix } }
-        ]
+        email: cleanEmail,
+        ...(tenantCompanyId && { companyId: tenantCompanyId })
       },
       include: {
         currentVehicle: true,
@@ -42,21 +41,32 @@ const resolveDriver = async (req) => {
         branch: true
       }
     });
-    if (driverByEmail) return driverByEmail;
+    if (driverByEmail) {
+      if (userId && !driverByEmail.userId) {
+        await prisma.driver.update({
+          where: { id: driverByEmail.id },
+          data: { userId }
+        }).catch(() => {});
+      }
+      return driverByEmail;
+    }
   }
 
-  // 3. Fallback: find by tenant or first driver in database
-  const fallbackDriver = await prisma.driver.findFirst({
-    where: req.tenantId ? { companyId: req.tenantId } : {},
-    include: {
-      currentVehicle: true,
-      company: true,
-      branch: true
-    },
-    orderBy: { createdAt: 'asc' }
-  });
+  // 3. Fallback: ONLY within the SAME company! NEVER across other companies
+  if (tenantCompanyId) {
+    const fallbackDriver = await prisma.driver.findFirst({
+      where: { companyId: tenantCompanyId },
+      include: {
+        currentVehicle: true,
+        company: true,
+        branch: true
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+    return fallbackDriver || null;
+  }
 
-  return fallbackDriver;
+  return null;
 };
 
 // ============================================================================
@@ -3390,24 +3400,7 @@ exports.markAllNotificationsRead = async (req, res, next) => {
 
 
 // --- Phase 1: Driver Dashboard Cleanup Routes ---
-
-exports.getPayroll = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    if (!driver) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED, message: 'Driver profile not found' }, 401);
-    return sendSuccess(res, {
-      driverInfo: { bankName: '', bsbNumber: '', accountNumber: '', accountName: '' },
-      currentPeriod: null,
-      ytdSummary: null,
-      currentPayBreakdown: null,
-      payHistory: [],
-      totalSummary: null,
-      ytdEarningsBreakdown: null,
-      taxStatements: [],
-      activeLoad: null
-    });
-  } catch (error) { next(error); }
-};
+exports.getPayroll = exports.getPayrollData;
 
 // Driver portal auxiliary methods
 exports.getTimesheets = async (req, res, next) => {

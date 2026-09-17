@@ -865,6 +865,33 @@ exports.createDriver = async (req, res, next) => {
       if (!isNaN(d.getTime())) driverData.joiningDate = d;
     }
 
+    if (driverData.email) {
+      try {
+        const bcrypt = require('bcryptjs');
+        const cleanDrvEmail = driverData.email.toLowerCase().trim();
+        let linkedUser = await prisma.user.findFirst({ where: { email: cleanDrvEmail } });
+        if (!linkedUser) {
+          const rawPass = payload.password || payload.Password || 'Driver@1234';
+          const passHash = await bcrypt.hash(rawPass, 10);
+          linkedUser = await prisma.user.create({
+            data: {
+              email: cleanDrvEmail,
+              name: `${driverData.firstName || ''} ${driverData.lastName || ''}`.trim() || 'Driver',
+              password: passHash,
+              role: 'DRIVER',
+              status: 'ACTIVE',
+              companyId: driverData.companyId || null
+            }
+          });
+        }
+        if (linkedUser) {
+          driverData.userId = linkedUser.id;
+        }
+      } catch (uErr) {
+        console.warn('Could not auto-create user in CompanyAdminPortalController:', uErr.message);
+      }
+    }
+
     const data = await prisma.driver.create({ data: driverData, include: { branch: true } });
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) { next(error); }

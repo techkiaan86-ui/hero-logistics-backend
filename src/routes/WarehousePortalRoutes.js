@@ -2,15 +2,13 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/WarehousePortalController');
 const { verifyToken, authorizeRoles } = require('../middlewares/auth');
-const { resolveTenant } = require('../middlewares/tenantResolver');
+const { resolveTenant, requireTenant } = require('../middlewares/tenantResolver');
 
-// Open endpoint for Find Stock, Receive Inbound, and Movements portal menus
+// Authenticate and resolve company scope before every portal endpoint.
+router.use(verifyToken, resolveTenant, requireTenant, authorizeRoles(['WAREHOUSE', 'YARD', 'DRIVER', 'DISPATCHER', 'COMPANY_ADMIN', 'SUPER_ADMIN', 'CUSTOMER']));
 router.get('/find-stock', ctrl.getFindStockPortal);
 router.get('/receive-inbound', ctrl.getReceiveInboundPortal);
 router.get('/movements-init', ctrl.getRelocationPortalData);
-
-// Apply auth & tenant resolver middleware across all Warehouse Portal routes
-router.use(verifyToken, resolveTenant, authorizeRoles(['WAREHOUSE', 'YARD', 'DRIVER', 'COMPANY_ADMIN', 'SUPER_ADMIN', 'CUSTOMER']));
 
 // 1. Warehouse Overview & Dashboard
 router.get('/overview', ctrl.getDashboard);
