@@ -432,14 +432,14 @@ exports.getChecklistContext = async (req, res, next) => {
       rego: 'No Vehicle Assigned',
       make: 'N/A',
       model: 'N/A',
-      ref: 'N/A'
+      ref: 'No Vehicle Assigned'
     };
     if (assignedVehicle) {
       vehicleData = {
-        rego: assignedVehicle.rego || assignedVehicle.plate || 'TRK-001',
+        rego: assignedVehicle.rego || assignedVehicle.plate || 'N/A',
         make: assignedVehicle.make || '',
         model: assignedVehicle.model || '',
-        ref: assignedVehicle.rego ? `${assignedVehicle.rego} (${assignedVehicle.make || ''} ${assignedVehicle.model || ''})`.trim() : 'TRK-001'
+        ref: assignedVehicle.rego ? `${assignedVehicle.rego} (${assignedVehicle.make || ''} ${assignedVehicle.model || ''})`.trim() : (assignedVehicle.plate || 'Vehicle Assigned')
       };
     }
 
@@ -451,62 +451,56 @@ exports.getChecklistContext = async (req, res, next) => {
       return {
         id: c.id,
         dateStr: new Date(c.createdAt).toLocaleString('en-AU', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        passedCount: c.passedCount || 19,
+        passedCount: c.passedCount ?? 0,
         totalItems: c.totalItems || 20,
         status: isPass ? 'Pass' : 'Fail',
         vehicle: c.vehicleRef || vehicleData?.rego || null,
         trailer: c.trailerRef || null,
         notes: c.notes || null
       };
-
     });
-
-    if (lastChecklists.length === 0) {
-      // No checklist data - return empty array
-    }
-
 
     const isWarehouse = req.user?.role === 'WAREHOUSE_MANAGER' || req.user?.role === 'WAREHOUSE_STAFF' || req.user?.role === 'YARD_ATTENDANT';
 
-    // Check items template based on role
+    // Check items template based on role - start with fresh unchecked state for real inspection
     const itemsTemplate = isWarehouse ? [
-      { id: 1, label: 'Forklift - Brakes & Controls', status: 'pass' },
-      { id: 2, label: 'Forklift - Hydraulics & Lift Mast', status: 'pass' },
-      { id: 3, label: 'Forklift - Tyres & Steering', status: 'pass' },
-      { id: 4, label: 'Pallet Jack - General Condition', status: 'pass' },
-      { id: 5, label: 'RF Scanner - Battery & Connection', status: 'pass' },
-      { id: 6, label: 'Printer / Label Station - Loaded & Online', status: 'pass' },
-      { id: 7, label: 'Dock Doors & Levellers - Operational', status: 'pass' },
-      { id: 8, label: 'PPE - High-Vis Vest & Safety Boots', status: 'pass' },
-      { id: 9, label: 'Emergency Exits - Clear & Accessible', status: 'pass' },
-      { id: 10, label: 'First Aid & Fire Extinguisher - Checked', status: 'pass' }
+      { id: 1, label: 'Forklift - Brakes & Controls', status: 'unchecked' },
+      { id: 2, label: 'Forklift - Hydraulics & Lift Mast', status: 'unchecked' },
+      { id: 3, label: 'Forklift - Tyres & Steering', status: 'unchecked' },
+      { id: 4, label: 'Pallet Jack - General Condition', status: 'unchecked' },
+      { id: 5, label: 'RF Scanner - Battery & Connection', status: 'unchecked' },
+      { id: 6, label: 'Printer / Label Station - Loaded & Online', status: 'unchecked' },
+      { id: 7, label: 'Dock Doors & Levellers - Operational', status: 'unchecked' },
+      { id: 8, label: 'PPE - High-Vis Vest & Safety Boots', status: 'unchecked' },
+      { id: 9, label: 'Emergency Exits - Clear & Accessible', status: 'unchecked' },
+      { id: 10, label: 'First Aid & Fire Extinguisher - Checked', status: 'unchecked' }
     ] : [
-      { id: 1, label: 'Brakes (service & park brake)', status: 'pass' },
-      { id: 2, label: 'Tyres – condition & pressure', status: 'pass' },
-      { id: 3, label: 'Lights – all working (head, tail, indicators, brake, reverse)', status: 'pass' },
-      { id: 4, label: 'Indicators / Hazard lights', status: 'pass' },
-      { id: 5, label: 'Steering & Suspension', status: 'pass' },
-      { id: 6, label: 'Windscreen / Windows / Mirrors', status: 'pass' },
-      { id: 7, label: 'Wipers / Washer', status: 'pass' },
-      { id: 8, label: 'Horn', status: 'pass' },
-      { id: 9, label: 'Seat belts / Airbag', status: 'pass' },
-      { id: 10, label: 'Fire extinguisher', status: 'pass' },
-      { id: 11, label: 'First aid kit', status: 'pass' },
-      { id: 12, label: 'Load securement equipment', status: 'pass' },
-      { id: 13, label: 'Fluid levels (engine oil, coolant, brake fluid)', status: 'pass' },
-      { id: 14, label: 'Fuel level sufficient for trip', status: 'pass' },
-      { id: 15, label: 'Leaks (oil, fuel, coolant, air)', status: 'pass' },
-      { id: 16, label: 'Body / Chassis / Coupling', status: 'pass' },
-      { id: 17, label: 'Load area clear & safe', status: 'pass' },
-      { id: 18, label: 'Fatigue / Fitness for driving', status: 'pass' },
-      { id: 19, label: 'Load secured / Straps & chains checked', status: 'na' },
+      { id: 1, label: 'Brakes (service & park brake)', status: 'unchecked' },
+      { id: 2, label: 'Tyres – condition & pressure', status: 'unchecked' },
+      { id: 3, label: 'Lights – all working (head, tail, indicators, brake, reverse)', status: 'unchecked' },
+      { id: 4, label: 'Indicators / Hazard lights', status: 'unchecked' },
+      { id: 5, label: 'Steering & Suspension', status: 'unchecked' },
+      { id: 6, label: 'Windscreen / Windows / Mirrors', status: 'unchecked' },
+      { id: 7, label: 'Wipers / Washer', status: 'unchecked' },
+      { id: 8, label: 'Horn', status: 'unchecked' },
+      { id: 9, label: 'Seat belts / Airbag', status: 'unchecked' },
+      { id: 10, label: 'Fire extinguisher', status: 'unchecked' },
+      { id: 11, label: 'First aid kit', status: 'unchecked' },
+      { id: 12, label: 'Load securement equipment', status: 'unchecked' },
+      { id: 13, label: 'Fluid levels (engine oil, coolant, brake fluid)', status: 'unchecked' },
+      { id: 14, label: 'Fuel level sufficient for trip', status: 'unchecked' },
+      { id: 15, label: 'Leaks (oil, fuel, coolant, air)', status: 'unchecked' },
+      { id: 16, label: 'Body / Chassis / Coupling', status: 'unchecked' },
+      { id: 17, label: 'Load area clear & safe', status: 'unchecked' },
+      { id: 18, label: 'Fatigue / Fitness for driving', status: 'unchecked' },
+      { id: 19, label: 'Load secured / Straps & chains checked', status: 'unchecked' },
       { id: 20, label: 'Other (notes or additional checks)', status: 'unchecked' },
     ];
 
     return sendSuccess(res, {
       vehicle: vehicleData,
       loadRef: loadRef,
-      trailerRef: currentLoadObj ? (currentLoadObj.trailerRego || 'N/A') : 'N/A',
+      trailerRef: currentLoadObj ? (currentLoadObj.trailerRego || 'No Trailer Assigned') : 'No Trailer Assigned',
       lastChecklists: lastChecklists,
       template: itemsTemplate,
       lastSaved: preStartChecklists[0] ? new Date(preStartChecklists[0].createdAt).toLocaleString('en-AU', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never'
