@@ -1970,7 +1970,7 @@ exports.getTimesheets = async (req, res, next) => {
           id: evt.id,
           type: typeStr,
           time: new Date(evt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          location: evt.note || evt.locationName || 'Yass NSW (-34.8020, 148.9097)',
+          location: evt.note || evt.locationName || 'Depot',
           badge,
           color,
           dot
@@ -2192,7 +2192,7 @@ exports.toggleBreak = async (req, res, next) => {
             timesheetId: timesheet.id,
             type: eventType,
             timestamp: new Date(),
-            locationName: location || 'Yass NSW (-34.8020, 148.9097)',
+            locationName: location || 'Depot',
             isAutoDetected: false
           }
         }).catch(() => null);
