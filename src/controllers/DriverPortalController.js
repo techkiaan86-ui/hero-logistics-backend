@@ -52,20 +52,6 @@ const resolveDriver = async (req) => {
     }
   }
 
-  // 3. Fallback: ONLY within the SAME company! NEVER across other companies
-  if (tenantCompanyId) {
-    const fallbackDriver = await prisma.driver.findFirst({
-      where: { companyId: tenantCompanyId },
-      include: {
-        currentVehicle: true,
-        company: true,
-        branch: true
-      },
-      orderBy: { createdAt: 'asc' }
-    });
-    return fallbackDriver || null;
-  }
-
   return null;
 };
 
@@ -593,10 +579,9 @@ exports.getJobs = async (req, res, next) => {
           where: {
             OR: [
               { driverId },
-              { driverId: 'Driver 1 demo' },
-              { driverId: 'driver1' },
               { driver: { email: driver?.email } }
-            ]
+            ],
+            ...(driver?.companyId && { companyId: driver.companyId })
           },
           include: {
             stops: { orderBy: { sequenceIndex: 'asc' } },
