@@ -4101,14 +4101,14 @@ exports.updateWarehouse = async (req, res, next) => {
     const payload = { ...req.body };
     
     const updateData = {};
-    if (payload.name) updateData.name = payload.name;
-    if (payload.code) updateData.code = payload.code;
-    if (payload.type) updateData.type = payload.type;
-    if (payload.status) updateData.status = payload.status;
-    if (payload.totalAreaSqm) updateData.totalAreaSqm = parseInt(payload.totalAreaSqm);
-    if (payload.palletCapacity) updateData.palletCapacity = parseInt(payload.palletCapacity);
-    if (payload.loadingDocks) updateData.loadingDocks = parseInt(payload.loadingDocks);
-    if (payload.address || payload.addr) updateData.address = payload.address || payload.addr;
+    if (payload.name !== undefined) updateData.name = payload.name;
+    if (payload.code !== undefined) updateData.code = payload.code;
+    if (payload.type !== undefined) updateData.type = payload.type;
+    if (payload.status !== undefined) updateData.status = payload.status;
+    if (payload.totalAreaSqm !== undefined) updateData.totalAreaSqm = payload.totalAreaSqm ? parseInt(payload.totalAreaSqm) : null;
+    if (payload.palletCapacity !== undefined) updateData.palletCapacity = payload.palletCapacity ? parseInt(payload.palletCapacity) : null;
+    if (payload.loadingDocks !== undefined) updateData.loadingDocks = payload.loadingDocks ? parseInt(payload.loadingDocks) : null;
+    if (payload.address !== undefined || payload.addr !== undefined) updateData.address = payload.address || payload.addr;
 
     const photoVal = payload.photoUrl || payload.image || payload.photo;
 
