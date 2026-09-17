@@ -7,13 +7,17 @@ const { saveBase64Image } = require('../utils/fileStorage');
  * Helper to resolve the driver record for the request
  */
 const resolveDriver = async (req) => {
-  const userId = req.user?.id;
+  const userId = req.user?.id || req.user?.userId;
   const userEmail = req.user?.email || req.user?.name;
+  const tenantCompanyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
 
-  // 1. Try finding by userId
+  // 1. Try finding by userId (scoped to company if known)
   if (userId) {
     const driverByUser = await prisma.driver.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        ...(tenantCompanyId && { companyId: tenantCompanyId })
+      },
       include: {
         currentVehicle: true,
         company: true,
@@ -23,18 +27,13 @@ const resolveDriver = async (req) => {
     if (driverByUser) return driverByUser;
   }
 
-  // 2. Try finding by email or email prefix
+  // 2. Try finding by exact email
   if (userEmail) {
     const cleanEmail = String(userEmail).toLowerCase().trim();
-    const prefix = cleanEmail.split('@')[0];
     const driverByEmail = await prisma.driver.findFirst({
       where: {
-        OR: [
-          { email: cleanEmail },
-          { email: { contains: prefix } },
-          { firstName: { contains: prefix } },
-          { lastName: { contains: prefix } }
-        ]
+        email: cleanEmail,
+        ...(tenantCompanyId && { companyId: tenantCompanyId })
       },
       include: {
         currentVehicle: true,
@@ -42,21 +41,18 @@ const resolveDriver = async (req) => {
         branch: true
       }
     });
-    if (driverByEmail) return driverByEmail;
+    if (driverByEmail) {
+      if (userId && !driverByEmail.userId) {
+        await prisma.driver.update({
+          where: { id: driverByEmail.id },
+          data: { userId }
+        }).catch(() => {});
+      }
+      return driverByEmail;
+    }
   }
 
-  // 3. Fallback: find by tenant or first driver in database
-  const fallbackDriver = await prisma.driver.findFirst({
-    where: req.tenantId ? { companyId: req.tenantId } : {},
-    include: {
-      currentVehicle: true,
-      company: true,
-      branch: true
-    },
-    orderBy: { createdAt: 'asc' }
-  });
-
-  return fallbackDriver;
+  return null;
 };
 
 // ============================================================================
@@ -303,13 +299,15 @@ exports.getDashboard = async (req, res, next) => {
       currentLoad: currentLoadData,
       todaySchedule: scheduleItems,
       hosLog: {
-        driveTimeElapsed: driveTimeStr,
-        driveTimeLeft: remDriveStr,
-        drivePercent: Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)),
-        shiftElapsed: `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m`,
+        driveTimeElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? driveTimeStr : '0h 00m',
+        driveTimeLeft: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? remDriveStr : '--',
+        drivePercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)) : 0,
+        shiftElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m` : '0h 00m',
         shiftMax: '14h max',
-        shiftPercent: Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)),
-        nextBreakDue: driveMinutes > 0 ? `in ${Math.max(0, 4 - Math.floor(driveMinutes / 60))}h` : 'in 4h 00m'
+        shiftPercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)) : 0,
+        nextBreakDue: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status)
+          ? (driveMinutes > 0 ? `in ${Math.max(0, 4 - Math.floor(driveMinutes / 60))}h` : 'in 4h 00m')
+          : 'Shift Not Started'
       },
       unreadMessages: formattedMessages,
       alerts: alerts,
@@ -436,14 +434,14 @@ exports.getChecklistContext = async (req, res, next) => {
       rego: 'No Vehicle Assigned',
       make: 'N/A',
       model: 'N/A',
-      ref: 'N/A'
+      ref: 'No Vehicle Assigned'
     };
     if (assignedVehicle) {
       vehicleData = {
-        rego: assignedVehicle.rego || assignedVehicle.plate || 'TRK-001',
+        rego: assignedVehicle.rego || assignedVehicle.plate || 'N/A',
         make: assignedVehicle.make || '',
         model: assignedVehicle.model || '',
-        ref: assignedVehicle.rego ? `${assignedVehicle.rego} (${assignedVehicle.make || ''} ${assignedVehicle.model || ''})`.trim() : 'TRK-001'
+        ref: assignedVehicle.rego ? `${assignedVehicle.rego} (${assignedVehicle.make || ''} ${assignedVehicle.model || ''})`.trim() : (assignedVehicle.plate || 'Vehicle Assigned')
       };
     }
 
@@ -455,62 +453,56 @@ exports.getChecklistContext = async (req, res, next) => {
       return {
         id: c.id,
         dateStr: new Date(c.createdAt).toLocaleString('en-AU', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        passedCount: c.passedCount || 19,
+        passedCount: c.passedCount ?? 0,
         totalItems: c.totalItems || 20,
         status: isPass ? 'Pass' : 'Fail',
         vehicle: c.vehicleRef || vehicleData?.rego || null,
         trailer: c.trailerRef || null,
         notes: c.notes || null
       };
-
     });
-
-    if (lastChecklists.length === 0) {
-      // No checklist data - return empty array
-    }
-
 
     const isWarehouse = req.user?.role === 'WAREHOUSE_MANAGER' || req.user?.role === 'WAREHOUSE_STAFF' || req.user?.role === 'YARD_ATTENDANT';
 
-    // Check items template based on role
+    // Check items template based on role - start with fresh unchecked state for real inspection
     const itemsTemplate = isWarehouse ? [
-      { id: 1, label: 'Forklift - Brakes & Controls', status: 'pass' },
-      { id: 2, label: 'Forklift - Hydraulics & Lift Mast', status: 'pass' },
-      { id: 3, label: 'Forklift - Tyres & Steering', status: 'pass' },
-      { id: 4, label: 'Pallet Jack - General Condition', status: 'pass' },
-      { id: 5, label: 'RF Scanner - Battery & Connection', status: 'pass' },
-      { id: 6, label: 'Printer / Label Station - Loaded & Online', status: 'pass' },
-      { id: 7, label: 'Dock Doors & Levellers - Operational', status: 'pass' },
-      { id: 8, label: 'PPE - High-Vis Vest & Safety Boots', status: 'pass' },
-      { id: 9, label: 'Emergency Exits - Clear & Accessible', status: 'pass' },
-      { id: 10, label: 'First Aid & Fire Extinguisher - Checked', status: 'pass' }
+      { id: 1, label: 'Forklift - Brakes & Controls', status: 'unchecked' },
+      { id: 2, label: 'Forklift - Hydraulics & Lift Mast', status: 'unchecked' },
+      { id: 3, label: 'Forklift - Tyres & Steering', status: 'unchecked' },
+      { id: 4, label: 'Pallet Jack - General Condition', status: 'unchecked' },
+      { id: 5, label: 'RF Scanner - Battery & Connection', status: 'unchecked' },
+      { id: 6, label: 'Printer / Label Station - Loaded & Online', status: 'unchecked' },
+      { id: 7, label: 'Dock Doors & Levellers - Operational', status: 'unchecked' },
+      { id: 8, label: 'PPE - High-Vis Vest & Safety Boots', status: 'unchecked' },
+      { id: 9, label: 'Emergency Exits - Clear & Accessible', status: 'unchecked' },
+      { id: 10, label: 'First Aid & Fire Extinguisher - Checked', status: 'unchecked' }
     ] : [
-      { id: 1, label: 'Brakes (service & park brake)', status: 'pass' },
-      { id: 2, label: 'Tyres – condition & pressure', status: 'pass' },
-      { id: 3, label: 'Lights – all working (head, tail, indicators, brake, reverse)', status: 'pass' },
-      { id: 4, label: 'Indicators / Hazard lights', status: 'pass' },
-      { id: 5, label: 'Steering & Suspension', status: 'pass' },
-      { id: 6, label: 'Windscreen / Windows / Mirrors', status: 'pass' },
-      { id: 7, label: 'Wipers / Washer', status: 'pass' },
-      { id: 8, label: 'Horn', status: 'pass' },
-      { id: 9, label: 'Seat belts / Airbag', status: 'pass' },
-      { id: 10, label: 'Fire extinguisher', status: 'pass' },
-      { id: 11, label: 'First aid kit', status: 'pass' },
-      { id: 12, label: 'Load securement equipment', status: 'pass' },
-      { id: 13, label: 'Fluid levels (engine oil, coolant, brake fluid)', status: 'pass' },
-      { id: 14, label: 'Fuel level sufficient for trip', status: 'pass' },
-      { id: 15, label: 'Leaks (oil, fuel, coolant, air)', status: 'pass' },
-      { id: 16, label: 'Body / Chassis / Coupling', status: 'pass' },
-      { id: 17, label: 'Load area clear & safe', status: 'pass' },
-      { id: 18, label: 'Fatigue / Fitness for driving', status: 'pass' },
-      { id: 19, label: 'Load secured / Straps & chains checked', status: 'na' },
+      { id: 1, label: 'Brakes (service & park brake)', status: 'unchecked' },
+      { id: 2, label: 'Tyres – condition & pressure', status: 'unchecked' },
+      { id: 3, label: 'Lights – all working (head, tail, indicators, brake, reverse)', status: 'unchecked' },
+      { id: 4, label: 'Indicators / Hazard lights', status: 'unchecked' },
+      { id: 5, label: 'Steering & Suspension', status: 'unchecked' },
+      { id: 6, label: 'Windscreen / Windows / Mirrors', status: 'unchecked' },
+      { id: 7, label: 'Wipers / Washer', status: 'unchecked' },
+      { id: 8, label: 'Horn', status: 'unchecked' },
+      { id: 9, label: 'Seat belts / Airbag', status: 'unchecked' },
+      { id: 10, label: 'Fire extinguisher', status: 'unchecked' },
+      { id: 11, label: 'First aid kit', status: 'unchecked' },
+      { id: 12, label: 'Load securement equipment', status: 'unchecked' },
+      { id: 13, label: 'Fluid levels (engine oil, coolant, brake fluid)', status: 'unchecked' },
+      { id: 14, label: 'Fuel level sufficient for trip', status: 'unchecked' },
+      { id: 15, label: 'Leaks (oil, fuel, coolant, air)', status: 'unchecked' },
+      { id: 16, label: 'Body / Chassis / Coupling', status: 'unchecked' },
+      { id: 17, label: 'Load area clear & safe', status: 'unchecked' },
+      { id: 18, label: 'Fatigue / Fitness for driving', status: 'unchecked' },
+      { id: 19, label: 'Load secured / Straps & chains checked', status: 'unchecked' },
       { id: 20, label: 'Other (notes or additional checks)', status: 'unchecked' },
     ];
 
     return sendSuccess(res, {
       vehicle: vehicleData,
       loadRef: loadRef,
-      trailerRef: currentLoadObj ? (currentLoadObj.trailerRego || 'N/A') : 'N/A',
+      trailerRef: currentLoadObj ? (currentLoadObj.trailerRego || 'No Trailer Assigned') : 'No Trailer Assigned',
       lastChecklists: lastChecklists,
       template: itemsTemplate,
       lastSaved: preStartChecklists[0] ? new Date(preStartChecklists[0].createdAt).toLocaleString('en-AU', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never'
@@ -583,10 +575,9 @@ exports.getJobs = async (req, res, next) => {
           where: {
             OR: [
               { driverId },
-              { driverId: 'Driver 1 demo' },
-              { driverId: 'driver1' },
               { driver: { email: driver?.email } }
-            ]
+            ],
+            ...(driver?.companyId && { companyId: driver.companyId })
           },
           include: {
             stops: { orderBy: { sequenceIndex: 'asc' } },
@@ -730,11 +721,16 @@ exports.getPickupLoad = async (req, res, next) => {
     const driver = await resolveDriver(req);
     const driverId = driver?.id;
 
+    if (!driverId) {
+      return sendSuccess(res, { load: null });
+    }
+
     let load = null;
-    if (driverId && prisma.load) {
+    if (prisma.load) {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_PICKUP', 'LOADING', 'Assigned', 'Dispatched'] }
         },
         include: {
@@ -743,104 +739,46 @@ exports.getPickupLoad = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
-
-      // Auto-provision default load if no load exists in DB
-      if (!load) {
-        const company = await prisma.company.findFirst().catch(() => null);
-        if (company) {
-          load = await prisma.load.create({
-            data: {
-              loadRef: 'LD-3987',
-              type: 'Car Carrying',
-              status: 'DISPATCHED',
-              companyId: company.id,
-              driverId: driver.id,
-              notes: 'ABC Car Yard • 12a Sunshine Rd, Melbourne VIC 3000',
-              items: {
-                create: [
-                  { vin: '1HGCR2E33AA004352', make: 'Toyota', model: 'Camry', color: 'White', rego: '4DCL23', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: 'JM1BL1H2F01121234', make: 'Mazda', model: '3', color: 'Black', rego: 'C00467', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '5YJ3E1EA5PF123456', make: 'Tesla', model: 'Model 3', color: 'Red', rego: 'FGH822', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '3HMKA2865FC000146', make: 'Honda', model: 'Accord', color: 'Silver', rego: 'JKL146', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'WAUZZZ4G9BN123456', make: 'Audi', model: 'A6', color: 'Black', rego: '765GTR', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'WDD2040072A123159', make: 'Mercedes', model: 'C200', color: 'Gray', rego: 'PQR591', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'YV1A22MK5E1001234', make: 'Volvo', model: 'XC90', color: 'White', rego: 'STU123', status: 'PENDING', category: 'DROP 3', location: 'Brisbane Car Centre' },
-                  { vin: '1FMCU0G93JU012345', make: 'Ford', model: 'Escape', color: 'Blue', rego: 'VWG567', status: 'PENDING', category: 'DROP 4', location: 'Gold Coast Autos' }
-
-                ]
-              }
-            },
-            include: { stops: true, items: true }
-          }).catch(() => null);
-        }
-      }
     }
 
-    let origin = 'Melbourne VIC';
-    let destination = 'Sydney NSW';
+    if (!load) {
+      return sendSuccess(res, { load: null });
+    }
 
-    if (load?.stops && load.stops.length > 0) {
+    let origin = '—';
+    let destination = '—';
+
+    if (load.stops && load.stops.length > 0) {
       const pickups = load.stops.filter(s => s.type === 'PICKUP');
       const deliveries = load.stops.filter(s => s.type === 'DELIVERY');
       if (pickups.length > 0) origin = pickups[0].address || origin;
       if (deliveries.length > 0) destination = deliveries[deliveries.length - 1].address || destination;
+    } else {
+      origin = load.origin || '—';
+      destination = load.destination || '—';
     }
 
-    let cars = [];
-    if (load?.items && load.items.length > 0) {
-      cars = load.items.map((item, index) => ({
-        id: item.id,
-        dbId: item.id,
-        drop: item.category || `DROP ${(index % 4) + 1}`,
-        dropLoc: item.location || destination,
-        vin: item.vin || `VIN-94820${index + 1}`,
-        makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
-        color: item.color || 'White',
-        plate: item.rego || `VIC-90${index + 1}`,
-        pickedUp: item.status === 'PICKED_UP' || item.status === 'LOADED' || item.status === 'DELIVERED',
-        time: item.status === 'PICKED_UP' || item.status === 'LOADED' ? '08:12 AM' : null,
-        photos: { current: item.status === 'PICKED_UP' ? 4 : 0, total: 4, percent: item.status === 'PICKED_UP' ? 100 : 0 }
-      }));
-    }
-
-    if (!cars || cars.length === 0) {
-      cars = [
-        {
-          id: 'c1',
-          dbId: 'c1',
-          drop: 'DROP 1',
-          dropLoc: destination || 'Bhopal Hub',
-          vin: '1HGCR2E33AA004352',
-          makeModel: 'Toyota Camry 2024',
-          color: 'White',
-          plate: '4DCL23',
-          pickedUp: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        },
-        {
-          id: 'c2',
-          dbId: 'c2',
-          drop: 'DROP 1',
-          dropLoc: destination || 'Bhopal Hub',
-          vin: 'JM1BL1H2F01121234',
-          makeModel: 'Mazda 3 Hatchback',
-          color: 'Black',
-          plate: 'C00467',
-          pickedUp: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        }
-      ];
-    }
+    const cars = (load.items || []).map((item, index) => ({
+      id: item.id,
+      dbId: item.id,
+      drop: item.category || `DROP ${(index % 4) + 1}`,
+      dropLoc: item.location || destination,
+      vin: item.vin || `VIN-${index + 1}`,
+      makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
+      color: item.color || 'White',
+      plate: item.rego || `REG-${index + 1}`,
+      pickedUp: item.status === 'PICKED_UP' || item.status === 'LOADED' || item.status === 'DELIVERED',
+      time: item.status === 'PICKED_UP' || item.status === 'LOADED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '08:12 AM') : null,
+      photos: { current: item.status === 'PICKED_UP' ? 4 : 0, total: 4, percent: item.status === 'PICKED_UP' ? 100 : 0 }
+    }));
 
     const responseData = {
-      id: load?.loadRef || 'LD-3987',
-      dbId: load?.id || null,
+      id: load.loadRef || load.loadNumber || load.id,
+      dbId: load.id,
       origin,
       destination,
-      pickupTime: load?.loadDate ? new Date(load.loadDate).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '08:00 AM',
-      estFinish: '04:30 PM',
+      pickupTime: load.loadDate ? new Date(load.loadDate).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '—',
+      estFinish: '—',
       cars
     };
 
@@ -1048,11 +986,16 @@ exports.getDeliveryPOD = async (req, res, next) => {
     const driver = await resolveDriver(req);
     const driverId = driver?.id;
 
+    if (!driverId) {
+      return sendSuccess(res, { load: null });
+    }
+
     let load = null;
-    if (driverId && prisma.load) {
+    if (prisma.load) {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_DELIVERY', 'UNLOADING', 'Assigned', 'Dispatched'] }
         },
         include: {
@@ -1062,56 +1005,21 @@ exports.getDeliveryPOD = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
-
-      if (!load) {
-        // Fallback to fetch any active load in company
-        load = await prisma.load.findFirst({
-          where: {
-            status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_DELIVERY', 'UNLOADING', 'Assigned', 'Dispatched'] }
-          },
-          include: {
-            stops: { orderBy: { sequenceIndex: 'asc' } },
-            items: true,
-            customer: true
-          },
-          orderBy: { createdAt: 'desc' }
-        }).catch(() => null);
-      }
-
-      if (!load) {
-        const company = await prisma.company.findFirst().catch(() => null);
-        if (company) {
-          load = await prisma.load.create({
-            data: {
-              loadRef: 'LD-3987',
-              type: 'Car Carrying',
-              status: 'IN_TRANSIT',
-              companyId: company.id,
-              driverId: driverId || undefined,
-              notes: 'Auto World Sydney • 45 Parramatta Rd, Sydney NSW 2150',
-              items: {
-                create: [
-                  { vin: '1HGCR2E33AA004352', make: 'Toyota', model: 'Camry', color: 'White', rego: 'ABC123', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: 'JM1BL1H2F01121234', make: 'Mazda', model: '3', color: 'Black', rego: 'CDE789', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '5YJ3E1EA5PF123456', make: 'Tesla', model: 'Model 3', color: 'Red', rego: 'GHD012', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' }
-                ]
-              }
-            },
-            include: { stops: true, items: true }
-          }).catch(() => null);
-        }
-      }
     }
 
-    let origin = 'Melbourne VIC';
-    let destination = 'Sydney NSW';
-    let deliveryLocation = 'Auto World Sydney';
-    let address = '45 Parramatta Rd, Sydney NSW 2150';
-    let stopIndex = 2;
-    let totalStops = 3;
-    let eta = '02:30 PM';
+    if (!load) {
+      return sendSuccess(res, { load: null });
+    }
 
-    if (load?.stops && load.stops.length > 0) {
+    let origin = '—';
+    let destination = '—';
+    let deliveryLocation = '—';
+    let address = '—';
+    let stopIndex = 1;
+    let totalStops = 1;
+    let eta = '—';
+
+    if (load.stops && load.stops.length > 0) {
       const pickups = load.stops.filter(s => s.type === 'PICKUP');
       const deliveries = load.stops.filter(s => s.type === 'DELIVERY');
       if (pickups.length > 0) {
@@ -1125,62 +1033,31 @@ exports.getDeliveryPOD = async (req, res, next) => {
         if (currentDelivery.scheduledTime) eta = currentDelivery.scheduledTime;
       }
       totalStops = load.stops.length;
+    } else {
+      origin = load.origin || '—';
+      destination = load.destination || '—';
     }
 
-    let cars = [];
-    if (load?.items && load.items.length > 0) {
-      cars = load.items.map((item, index) => ({
-        id: item.id,
-        dbId: item.id,
-        drop: item.category || 'DROP 1',
-        dropLoc: item.location || deliveryLocation,
-        vin: item.vin || `VIN-${index + 1}`,
-        makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
-        color: item.color || 'White',
-        plate: item.rego || `REG-${index + 1}`,
-        delivered: item.status === 'DELIVERED' || item.status === 'COMPLETED',
-        time: item.status === 'DELIVERED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '01:57 PM') : null,
-        photos: { current: item.status === 'DELIVERED' ? 4 : 0, total: 4, percent: item.status === 'DELIVERED' ? 100 : 0 }
-      }));
-    }
+    const cars = (load.items || []).map((item, index) => ({
+      id: item.id,
+      dbId: item.id,
+      drop: item.category || 'DROP 1',
+      dropLoc: item.location || deliveryLocation,
+      vin: item.vin || `VIN-${index + 1}`,
+      makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
+      color: item.color || 'White',
+      plate: item.rego || `REG-${index + 1}`,
+      delivered: item.status === 'DELIVERED' || item.status === 'COMPLETED',
+      time: item.status === 'DELIVERED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '01:57 PM') : null,
+      photos: { current: item.status === 'DELIVERED' ? 4 : 0, total: 4, percent: item.status === 'DELIVERED' ? 100 : 0 }
+    }));
 
-    if (!cars || cars.length === 0) {
-      cars = [
-        {
-          id: 'c1',
-          dbId: 'c1',
-          drop: 'DROP 1',
-          dropLoc: deliveryLocation,
-          vin: '1HGCR2E33AA004352',
-          makeModel: 'Toyota Camry 2024',
-          color: 'White',
-          plate: '4DCL23',
-          delivered: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        },
-        {
-          id: 'c2',
-          dbId: 'c2',
-          drop: 'DROP 1',
-          dropLoc: deliveryLocation,
-          vin: 'JM1BL1H2F01121234',
-          makeModel: 'Mazda 3 Hatchback',
-          color: 'Black',
-          plate: 'C00467',
-          delivered: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        }
-      ];
-    }
-
-    const totalCarsCount = load?.items?.length || cars.length;
+    const totalCarsCount = cars.length;
     const deliveredCount = cars.filter(c => c.delivered).length;
 
     const responseData = {
-      id: load?.loadRef || 'LD-3987',
-      dbId: load?.id || null,
+      id: load.loadRef || load.loadNumber || load.id,
+      dbId: load.id,
       origin,
       destination,
       pickupLocation: deliveryLocation,
@@ -1346,6 +1223,7 @@ exports.getActiveRun = async (req, res, next) => {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_PICKUP', 'LOADING'] }
         },
         include: {
@@ -1358,6 +1236,10 @@ exports.getActiveRun = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
+    }
+
+    if (!load) {
+      return sendSuccess(res, { run: null, currentLoad: null });
     }
 
     let origin = null;
@@ -2084,7 +1966,7 @@ exports.getTimesheets = async (req, res, next) => {
           id: evt.id,
           type: typeStr,
           time: new Date(evt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          location: evt.note || evt.locationName || 'Yass NSW (-34.8020, 148.9097)',
+          location: evt.note || evt.locationName || 'Depot',
           badge,
           color,
           dot
@@ -2306,7 +2188,7 @@ exports.toggleBreak = async (req, res, next) => {
             timesheetId: timesheet.id,
             type: eventType,
             timestamp: new Date(),
-            locationName: location || 'Yass NSW (-34.8020, 148.9097)',
+            locationName: location || 'Depot',
             isAutoDetected: false
           }
         }).catch(() => null);
@@ -3390,24 +3272,7 @@ exports.markAllNotificationsRead = async (req, res, next) => {
 
 
 // --- Phase 1: Driver Dashboard Cleanup Routes ---
-
-exports.getPayroll = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    if (!driver) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED, message: 'Driver profile not found' }, 401);
-    return sendSuccess(res, {
-      driverInfo: { bankName: '', bsbNumber: '', accountNumber: '', accountName: '' },
-      currentPeriod: null,
-      ytdSummary: null,
-      currentPayBreakdown: null,
-      payHistory: [],
-      totalSummary: null,
-      ytdEarningsBreakdown: null,
-      taxStatements: [],
-      activeLoad: null
-    });
-  } catch (error) { next(error); }
-};
+exports.getPayroll = exports.getPayrollData;
 
 // Driver portal auxiliary methods
 exports.getTimesheets = async (req, res, next) => {

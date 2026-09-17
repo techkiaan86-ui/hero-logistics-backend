@@ -31,6 +31,40 @@ class AuthService {
       });
     }
 
+    // Auto-recovery: If user record does not exist yet but a Driver profile exists with this email
+    if (!user && prisma.driver) {
+      try {
+        const existingDriver = await prisma.driver.findFirst({
+          where: { email: cleanEmail },
+          include: { company: true }
+        });
+        if (existingDriver) {
+          const passToHash = password && password.trim() ? password.trim() : 'Driver@1234';
+          const passHash = await bcrypt.hash(passToHash, 10);
+          const driverFullName = `${existingDriver.firstName || ''} ${existingDriver.lastName || ''}`.trim() || 'Driver';
+          user = await prisma.user.create({
+            data: {
+              email: cleanEmail,
+              name: driverFullName,
+              password: passHash,
+              role: 'DRIVER',
+              status: 'ACTIVE',
+              companyId: existingDriver.companyId || null,
+              branchId: existingDriver.branchId || null
+            }
+          });
+          if (user) {
+            await prisma.driver.update({
+              where: { id: existingDriver.id },
+              data: { userId: user.id }
+            }).catch(() => {});
+          }
+        }
+      } catch (drvErr) {
+        console.warn('Driver user auto-recovery check failed:', drvErr.message);
+      }
+    }
+
     if (!user) {
       throw { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password', statusCode: 401 };
     }

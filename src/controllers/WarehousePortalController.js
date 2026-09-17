@@ -261,17 +261,11 @@ exports.getFindStockPortal = async (req, res, next) => {
   try {
     const tenantId = req.tenantId;
 
-    let companyId = tenantId || req.user?.companyId || req.user?.tenantId;
-    if (!companyId) {
-      const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-      if (firstCompany) companyId = firstCompany.id;
-    }
-
-    const companyWhere = companyId ? { warehouse: { branch: { companyId } } } : {};
+    const companyId = tenantId || req.user?.companyId || req.user?.tenantId;
 
     let dbItems = await prisma.loadItem.findMany({
       ...(companyId && { where: { OR: [{ warehouse: { branch: { companyId } } }, { load: { companyId } }] } }),
-      orderBy: { createdAt: 'desc' },
+      orderBy: { receivedDate: 'desc' },
       include: {
         load: { include: { customer: true } },
         customer: true,
@@ -281,122 +275,6 @@ exports.getFindStockPortal = async (req, res, next) => {
         photos: true
       }
     }).catch(() => []);
-
-    if (dbItems.length === 0) {
-      dbItems = await prisma.loadItem.findMany({
-        orderBy: { createdAt: 'desc' },
-        include: {
-          load: { include: { customer: true } },
-          customer: true,
-          warehouse: true,
-          loadLane: true,
-          stagingArea: true,
-          photos: true
-        }
-      }).catch(() => []);
-    }
-
-    // Auto seed initial stock items if DB is empty
-    if (dbItems.length === 0) {
-      let defaultLoad = await prisma.load.findFirst({ ...(companyId && { where: { companyId } }) });
-      if (!defaultLoad) defaultLoad = await prisma.load.findFirst();
-      if (!defaultLoad && companyId) {
-        defaultLoad = await prisma.load.create({
-          data: {
-            loadRef: `LD-${Math.floor(10000 + Math.random() * 90000)}`,
-            type: 'General Freight',
-            status: 'PLANNED',
-            companyId
-          }
-        }).catch(() => null);
-      }
-
-      let defaultWh = await prisma.warehouse.findFirst({ ...(companyId && { where: { branch: { companyId } } }) });
-      if (!defaultWh) defaultWh = await prisma.warehouse.findFirst();
-
-      if (defaultLoad) {
-        await prisma.loadItem.createMany({
-          data: [
-            {
-              loadId: defaultLoad.id,
-              ...(defaultWh && { warehouseId: defaultWh.id }),
-              make: 'Toyota',
-              model: 'LandCruiser',
-              rego: 'RG17888717524762',
-              vin: 'VIN-1788871752476-03',
-              stockRef: 'RG17888717524762',
-              vehicleType: 'Car Carrying',
-              stockStatus: 'IN_STORAGE',
-              zone: 'Zone B',
-              row: 'Row 2',
-              bay: 'Bay 3',
-              position: 'P01',
-              receivedDate: new Date()
-            },
-            {
-              loadId: defaultLoad.id,
-              ...(defaultWh && { warehouseId: defaultWh.id }),
-              make: 'Toyota',
-              model: 'LandCruiser',
-              rego: 'RG17888717524761',
-              vin: 'VIN-1788871752476-02',
-              stockRef: 'RG17888717524761',
-              vehicleType: 'Car Carrying',
-              stockStatus: 'IN_STORAGE',
-              zone: 'Zone B',
-              row: 'Row 2',
-              bay: 'Bay 2',
-              position: 'P01',
-              receivedDate: new Date()
-            },
-            {
-              loadId: defaultLoad.id,
-              ...(defaultWh && { warehouseId: defaultWh.id }),
-              make: 'Ford',
-              model: 'Ranger Wildtrak',
-              rego: 'FR9988223311',
-              vin: 'VIN-9988223311-01',
-              stockRef: 'FR9988223311',
-              vehicleType: 'General Freight',
-              stockStatus: 'STAGED',
-              zone: 'Zone A',
-              row: 'Row 1',
-              bay: 'Bay 1',
-              position: 'P01',
-              receivedDate: new Date()
-            }
-          ]
-        }).catch(() => null);
-      }
-
-      dbItems = await prisma.loadItem.findMany({
-        where: companyWhere,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          load: { include: { customer: true } },
-          customer: true,
-          warehouse: true,
-          loadLane: true,
-          stagingArea: true,
-          photos: true
-        }
-      }).catch(() => []);
-
-      if (dbItems.length === 0) {
-        dbItems = await prisma.loadItem.findMany({
-          take: 10,
-          orderBy: { createdAt: 'desc' },
-          include: {
-            load: { include: { customer: true } },
-            customer: true,
-            warehouse: true,
-            loadLane: true,
-            stagingArea: true,
-            photos: true
-          }
-        }).catch(() => []);
-      }
-    }
 
     const [dbLanes, dbHoldingAreas] = await Promise.all([
       prisma.loadLane.findMany({
@@ -474,86 +352,7 @@ exports.getFindStockPortal = async (req, res, next) => {
       };
     });
 
-    let finalFormattedItems = formattedItems;
-    if (finalFormattedItems.length === 0) {
-      finalFormattedItems = [
-        {
-          id: 'item-1',
-          itemNo: 'RG17888717524762',
-          title: 'Toyota LandCruiser',
-          rego: 'RG17888717524762',
-          vin: 'VIN-1788871752476-03',
-          barcode: 'RG17888717524762',
-          type: 'Vehicle',
-          typeBadge: 'Car Carrying',
-          typeColor: 'blue',
-          location: 'Main Yard',
-          locationDetail: 'Zone B / Row 2 / Bay 3 / -',
-          rowBayPos: 'Zone B / Row 2 / Bay 3 / -',
-          status: 'In Storage',
-          statusColor: 'green',
-          loadJob: 'Unassigned',
-          loadDetail: 'Unassigned',
-          customer: 'Direct Customer',
-          updated: 'Today, 10:30 AM',
-          receivedDate: 'Today',
-          condition: 'Good',
-          notes: 'Standard Vehicle',
-          image: 'https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?auto=format&fit=crop&q=80&w=400',
-          iconType: 'car'
-        },
-        {
-          id: 'item-2',
-          itemNo: 'RG17888717524761',
-          title: 'Toyota LandCruiser',
-          rego: 'RG17888717524761',
-          vin: 'VIN-1788871752476-02',
-          barcode: 'RG17888717524761',
-          type: 'Vehicle',
-          typeBadge: 'Car Carrying',
-          typeColor: 'blue',
-          location: 'Main Yard',
-          locationDetail: 'Zone B / Row 2 / Bay 2 / -',
-          rowBayPos: 'Zone B / Row 2 / Bay 2 / -',
-          status: 'In Storage',
-          statusColor: 'green',
-          loadJob: 'Unassigned',
-          loadDetail: 'Unassigned',
-          customer: 'Direct Customer',
-          updated: 'Today, 10:15 AM',
-          receivedDate: 'Today',
-          condition: 'Good',
-          notes: 'Standard Vehicle',
-          image: 'https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?auto=format&fit=crop&q=80&w=400',
-          iconType: 'car'
-        },
-        {
-          id: 'item-3',
-          itemNo: 'FR9988223311',
-          title: 'Ford Ranger Wildtrak',
-          rego: 'FR9988223311',
-          vin: 'VIN-9988223311-01',
-          barcode: 'FR9988223311',
-          type: 'General Freight',
-          typeBadge: 'General',
-          typeColor: 'green',
-          location: 'Depot Bay 01',
-          locationDetail: 'Zone A / Row 1 / Bay 1 / -',
-          rowBayPos: 'Zone A / Row 1 / Bay 1 / -',
-          status: 'Staged',
-          statusColor: 'purple',
-          loadJob: 'LD-10580',
-          loadDetail: 'Staging Area 1',
-          customer: 'ABC Motors',
-          updated: 'Today, 09:00 AM',
-          receivedDate: 'Today',
-          condition: 'Good',
-          notes: 'Staged for Sydney load',
-          image: 'https://images.unsplash.com/photo-1549399542-7e3f8b79c341?auto=format&fit=crop&q=80&w=400',
-          iconType: 'pallet'
-        }
-      ];
-    }
+    const finalFormattedItems = formattedItems;
 
     const inStorageCount = finalFormattedItems.filter(i => i.status === 'In Storage').length;
     const stagedCount = finalFormattedItems.filter(i => i.status === 'Staged').length;
@@ -1037,28 +836,6 @@ exports.getReceiveInboundPortal = async (req, res, next) => {
       id: v.id,
       name: `${v.rego || 'TRK-101'} - ${v.make || 'Freightliner'} ${v.model || 'Cascadia'}`
     }));
-
-    if (formattedSuppliers.length === 0) {
-      formattedSuppliers.push(
-        { id: 'sup-1', name: 'Global Logistics & Auto Freight', abn: '123456789' },
-        { id: 'sup-2', name: 'Pacific Fleet Distributors', abn: '987654321' }
-      );
-    }
-    if (formattedDrivers.length === 0) {
-      formattedDrivers.push(
-        { id: 'drv-1', name: 'Driver VIC 11223344' },
-        { id: 'drv-2', name: 'Driver NSW 99887766' }
-      );
-    }
-    if (formattedVehicles.length === 0) {
-      formattedVehicles.push(
-        { id: 'veh-1', name: 'TRK-9901 - Volvo FH16 Heavy Rig' },
-        { id: 'veh-2', name: 'TRK-4420 - Scania R580 Prime Mover' }
-      );
-    }
-    if (warehouses.length === 0) {
-      warehouses.push({ id: 'wh-1', name: 'ABC Pvt Ltd / Main Depot', code: 'DEPOT-1' });
-    }
 
     const suggestedInboundNo = `INB-${Math.floor(100000 + Math.random() * 900000)}`;
 
@@ -4115,7 +3892,8 @@ exports.getDispatchReady = async (req, res, next) => {
   try {
     const readyLoads = await prisma.load.findMany({
       where: {
-        status: { in: ['PLANNED', 'ASSIGNED'] }
+        status: { in: ['PLANNED', 'ASSIGNED'] },
+        ...(req.tenantId && { companyId: req.tenantId })
       },
       include: {
         customer: true,
@@ -6016,17 +5794,13 @@ exports.getImportExportOverview = async (req, res, next) => {
 exports.getRelocationPortalData = async (req, res, next) => {
   try {
     const tenantId = req.tenantId;
-    let companyId = tenantId || req.user?.companyId || req.user?.tenantId;
-    if (!companyId) {
-      const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-      if (firstCompany) companyId = firstCompany.id;
-    }
+    const companyId = tenantId || req.user?.companyId || req.user?.tenantId;
 
     let dbItems = await prisma.loadItem.findMany({
       where: {
         ...(companyId && { OR: [{ warehouse: { branch: { companyId } } }, { load: { companyId } }] })
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { receivedDate: 'desc' },
       take: 50,
       include: {
         load: { select: { id: true, loadRef: true, status: true } },
@@ -6036,20 +5810,6 @@ exports.getRelocationPortalData = async (req, res, next) => {
         stagingArea: { select: { id: true, name: true } }
       }
     }).catch(() => []);
-
-    if (dbItems.length === 0) {
-      dbItems = await prisma.loadItem.findMany({
-        take: 30,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          load: { select: { id: true, loadRef: true, status: true } },
-          customer: { select: { id: true, name: true, companyName: true } },
-          warehouse: { select: { id: true, name: true } },
-          loadLane: { select: { id: true, name: true } },
-          stagingArea: { select: { id: true, name: true } }
-        }
-      }).catch(() => []);
-    }
 
     const formattedStock = dbItems.map((item, idx) => {
       const title = (item.make || item.model)
@@ -6082,11 +5842,7 @@ exports.getRelocationPortalData = async (req, res, next) => {
       orderBy: { name: 'asc' }
     }).catch(() => []);
 
-    const formattedLanes = (dbLanes.length > 0 ? dbLanes : [
-      { id: 'lane-1', name: 'Staging Lane 1 (Outbound Prep)', status: 'ACTIVE', area: 'Zone A' },
-      { id: 'lane-2', name: 'Staging Lane 2 (Highway Dispatch)', status: 'ACTIVE', area: 'Zone B' },
-      { id: 'lane-3', name: 'Staging Lane 3 (Express Line)', status: 'EMPTY', area: 'Zone C' }
-    ]).map(l => ({
+    const formattedLanes = dbLanes.map(l => ({
       id: l.id,
       name: l.name || l.laneName || 'Load Lane',
       status: l.status || 'ACTIVE',
@@ -6098,11 +5854,7 @@ exports.getRelocationPortalData = async (req, res, next) => {
       orderBy: { name: 'asc' }
     }).catch(() => []);
 
-    const formattedAreas = (dbAreas.length > 0 ? dbAreas : [
-      { id: 'area-1', name: 'Holding Staging Area 1', zone: 'Zone A', capacity: 25 },
-      { id: 'area-2', name: 'Holding Staging Area 2', zone: 'Zone B', capacity: 20 },
-      { id: 'area-3', name: 'Quarantine & Inspection Yard', zone: 'Zone DG', capacity: 15 }
-    ]).map(a => ({
+    const formattedAreas = dbAreas.map(a => ({
       id: a.id,
       name: a.name || a.code || 'Holding Area',
       zone: a.zone || 'Zone A',
