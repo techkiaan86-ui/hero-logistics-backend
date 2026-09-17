@@ -4032,9 +4032,10 @@ exports.createWarehouse = async (req, res, next) => {
       });
     }
 
-    const warehouseCode = payload.code && String(payload.code).trim()
-      ? String(payload.code).trim()
-      : `WH-${Math.floor(100 + Math.random() * 900)}`;
+    if (!payload.code || !String(payload.code).trim()) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Warehouse Code is required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+    const warehouseCode = String(payload.code).trim();
 
     const photoVal = payload.photoUrl || payload.image || payload.photo || null;
 
