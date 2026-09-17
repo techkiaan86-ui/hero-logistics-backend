@@ -725,11 +725,16 @@ exports.getPickupLoad = async (req, res, next) => {
     const driver = await resolveDriver(req);
     const driverId = driver?.id;
 
+    if (!driverId) {
+      return sendSuccess(res, { load: null });
+    }
+
     let load = null;
-    if (driverId && prisma.load) {
+    if (prisma.load) {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_PICKUP', 'LOADING', 'Assigned', 'Dispatched'] }
         },
         include: {
@@ -738,104 +743,46 @@ exports.getPickupLoad = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
-
-      // Auto-provision default load if no load exists in DB
-      if (!load) {
-        const company = await prisma.company.findFirst().catch(() => null);
-        if (company) {
-          load = await prisma.load.create({
-            data: {
-              loadRef: 'LD-3987',
-              type: 'Car Carrying',
-              status: 'DISPATCHED',
-              companyId: company.id,
-              driverId: driver.id,
-              notes: 'ABC Car Yard • 12a Sunshine Rd, Melbourne VIC 3000',
-              items: {
-                create: [
-                  { vin: '1HGCR2E33AA004352', make: 'Toyota', model: 'Camry', color: 'White', rego: '4DCL23', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: 'JM1BL1H2F01121234', make: 'Mazda', model: '3', color: 'Black', rego: 'C00467', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '5YJ3E1EA5PF123456', make: 'Tesla', model: 'Model 3', color: 'Red', rego: 'FGH822', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '3HMKA2865FC000146', make: 'Honda', model: 'Accord', color: 'Silver', rego: 'JKL146', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'WAUZZZ4G9BN123456', make: 'Audi', model: 'A6', color: 'Black', rego: '765GTR', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'WDD2040072A123159', make: 'Mercedes', model: 'C200', color: 'Gray', rego: 'PQR591', status: 'PENDING', category: 'DROP 2', location: 'Newcastle Motors' },
-                  { vin: 'YV1A22MK5E1001234', make: 'Volvo', model: 'XC90', color: 'White', rego: 'STU123', status: 'PENDING', category: 'DROP 3', location: 'Brisbane Car Centre' },
-                  { vin: '1FMCU0G93JU012345', make: 'Ford', model: 'Escape', color: 'Blue', rego: 'VWG567', status: 'PENDING', category: 'DROP 4', location: 'Gold Coast Autos' }
-
-                ]
-              }
-            },
-            include: { stops: true, items: true }
-          }).catch(() => null);
-        }
-      }
     }
 
-    let origin = 'Melbourne VIC';
-    let destination = 'Sydney NSW';
+    if (!load) {
+      return sendSuccess(res, { load: null });
+    }
 
-    if (load?.stops && load.stops.length > 0) {
+    let origin = '—';
+    let destination = '—';
+
+    if (load.stops && load.stops.length > 0) {
       const pickups = load.stops.filter(s => s.type === 'PICKUP');
       const deliveries = load.stops.filter(s => s.type === 'DELIVERY');
       if (pickups.length > 0) origin = pickups[0].address || origin;
       if (deliveries.length > 0) destination = deliveries[deliveries.length - 1].address || destination;
+    } else {
+      origin = load.origin || '—';
+      destination = load.destination || '—';
     }
 
-    let cars = [];
-    if (load?.items && load.items.length > 0) {
-      cars = load.items.map((item, index) => ({
-        id: item.id,
-        dbId: item.id,
-        drop: item.category || `DROP ${(index % 4) + 1}`,
-        dropLoc: item.location || destination,
-        vin: item.vin || `VIN-94820${index + 1}`,
-        makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
-        color: item.color || 'White',
-        plate: item.rego || `VIC-90${index + 1}`,
-        pickedUp: item.status === 'PICKED_UP' || item.status === 'LOADED' || item.status === 'DELIVERED',
-        time: item.status === 'PICKED_UP' || item.status === 'LOADED' ? '08:12 AM' : null,
-        photos: { current: item.status === 'PICKED_UP' ? 4 : 0, total: 4, percent: item.status === 'PICKED_UP' ? 100 : 0 }
-      }));
-    }
-
-    if (!cars || cars.length === 0) {
-      cars = [
-        {
-          id: 'c1',
-          dbId: 'c1',
-          drop: 'DROP 1',
-          dropLoc: destination || 'Bhopal Hub',
-          vin: '1HGCR2E33AA004352',
-          makeModel: 'Toyota Camry 2024',
-          color: 'White',
-          plate: '4DCL23',
-          pickedUp: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        },
-        {
-          id: 'c2',
-          dbId: 'c2',
-          drop: 'DROP 1',
-          dropLoc: destination || 'Bhopal Hub',
-          vin: 'JM1BL1H2F01121234',
-          makeModel: 'Mazda 3 Hatchback',
-          color: 'Black',
-          plate: 'C00467',
-          pickedUp: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        }
-      ];
-    }
+    const cars = (load.items || []).map((item, index) => ({
+      id: item.id,
+      dbId: item.id,
+      drop: item.category || `DROP ${(index % 4) + 1}`,
+      dropLoc: item.location || destination,
+      vin: item.vin || `VIN-${index + 1}`,
+      makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
+      color: item.color || 'White',
+      plate: item.rego || `REG-${index + 1}`,
+      pickedUp: item.status === 'PICKED_UP' || item.status === 'LOADED' || item.status === 'DELIVERED',
+      time: item.status === 'PICKED_UP' || item.status === 'LOADED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '08:12 AM') : null,
+      photos: { current: item.status === 'PICKED_UP' ? 4 : 0, total: 4, percent: item.status === 'PICKED_UP' ? 100 : 0 }
+    }));
 
     const responseData = {
-      id: load?.loadRef || 'LD-3987',
-      dbId: load?.id || null,
+      id: load.loadRef || load.loadNumber || load.id,
+      dbId: load.id,
       origin,
       destination,
-      pickupTime: load?.loadDate ? new Date(load.loadDate).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '08:00 AM',
-      estFinish: '04:30 PM',
+      pickupTime: load.loadDate ? new Date(load.loadDate).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '—',
+      estFinish: '—',
       cars
     };
 
@@ -1043,11 +990,16 @@ exports.getDeliveryPOD = async (req, res, next) => {
     const driver = await resolveDriver(req);
     const driverId = driver?.id;
 
+    if (!driverId) {
+      return sendSuccess(res, { load: null });
+    }
+
     let load = null;
-    if (driverId && prisma.load) {
+    if (prisma.load) {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_DELIVERY', 'UNLOADING', 'Assigned', 'Dispatched'] }
         },
         include: {
@@ -1057,56 +1009,21 @@ exports.getDeliveryPOD = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
-
-      if (!load) {
-        // Fallback to fetch any active load in company
-        load = await prisma.load.findFirst({
-          where: {
-            status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_DELIVERY', 'UNLOADING', 'Assigned', 'Dispatched'] }
-          },
-          include: {
-            stops: { orderBy: { sequenceIndex: 'asc' } },
-            items: true,
-            customer: true
-          },
-          orderBy: { createdAt: 'desc' }
-        }).catch(() => null);
-      }
-
-      if (!load) {
-        const company = await prisma.company.findFirst().catch(() => null);
-        if (company) {
-          load = await prisma.load.create({
-            data: {
-              loadRef: 'LD-3987',
-              type: 'Car Carrying',
-              status: 'IN_TRANSIT',
-              companyId: company.id,
-              driverId: driverId || undefined,
-              notes: 'Auto World Sydney • 45 Parramatta Rd, Sydney NSW 2150',
-              items: {
-                create: [
-                  { vin: '1HGCR2E33AA004352', make: 'Toyota', model: 'Camry', color: 'White', rego: 'ABC123', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: 'JM1BL1H2F01121234', make: 'Mazda', model: '3', color: 'Black', rego: 'CDE789', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' },
-                  { vin: '5YJ3E1EA5PF123456', make: 'Tesla', model: 'Model 3', color: 'Red', rego: 'GHD012', status: 'PENDING', category: 'DROP 1', location: 'Auto World Sydney' }
-                ]
-              }
-            },
-            include: { stops: true, items: true }
-          }).catch(() => null);
-        }
-      }
     }
 
-    let origin = 'Melbourne VIC';
-    let destination = 'Sydney NSW';
-    let deliveryLocation = 'Auto World Sydney';
-    let address = '45 Parramatta Rd, Sydney NSW 2150';
-    let stopIndex = 2;
-    let totalStops = 3;
-    let eta = '02:30 PM';
+    if (!load) {
+      return sendSuccess(res, { load: null });
+    }
 
-    if (load?.stops && load.stops.length > 0) {
+    let origin = '—';
+    let destination = '—';
+    let deliveryLocation = '—';
+    let address = '—';
+    let stopIndex = 1;
+    let totalStops = 1;
+    let eta = '—';
+
+    if (load.stops && load.stops.length > 0) {
       const pickups = load.stops.filter(s => s.type === 'PICKUP');
       const deliveries = load.stops.filter(s => s.type === 'DELIVERY');
       if (pickups.length > 0) {
@@ -1120,62 +1037,31 @@ exports.getDeliveryPOD = async (req, res, next) => {
         if (currentDelivery.scheduledTime) eta = currentDelivery.scheduledTime;
       }
       totalStops = load.stops.length;
+    } else {
+      origin = load.origin || '—';
+      destination = load.destination || '—';
     }
 
-    let cars = [];
-    if (load?.items && load.items.length > 0) {
-      cars = load.items.map((item, index) => ({
-        id: item.id,
-        dbId: item.id,
-        drop: item.category || 'DROP 1',
-        dropLoc: item.location || deliveryLocation,
-        vin: item.vin || `VIN-${index + 1}`,
-        makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
-        color: item.color || 'White',
-        plate: item.rego || `REG-${index + 1}`,
-        delivered: item.status === 'DELIVERED' || item.status === 'COMPLETED',
-        time: item.status === 'DELIVERED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '01:57 PM') : null,
-        photos: { current: item.status === 'DELIVERED' ? 4 : 0, total: 4, percent: item.status === 'DELIVERED' ? 100 : 0 }
-      }));
-    }
+    const cars = (load.items || []).map((item, index) => ({
+      id: item.id,
+      dbId: item.id,
+      drop: item.category || 'DROP 1',
+      dropLoc: item.location || deliveryLocation,
+      vin: item.vin || `VIN-${index + 1}`,
+      makeModel: `${item.make || ''} ${item.model || ''}`.trim() || item.description || 'Vehicle',
+      color: item.color || 'White',
+      plate: item.rego || `REG-${index + 1}`,
+      delivered: item.status === 'DELIVERED' || item.status === 'COMPLETED',
+      time: item.status === 'DELIVERED' ? (item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' }) : '01:57 PM') : null,
+      photos: { current: item.status === 'DELIVERED' ? 4 : 0, total: 4, percent: item.status === 'DELIVERED' ? 100 : 0 }
+    }));
 
-    if (!cars || cars.length === 0) {
-      cars = [
-        {
-          id: 'c1',
-          dbId: 'c1',
-          drop: 'DROP 1',
-          dropLoc: deliveryLocation,
-          vin: '1HGCR2E33AA004352',
-          makeModel: 'Toyota Camry 2024',
-          color: 'White',
-          plate: '4DCL23',
-          delivered: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        },
-        {
-          id: 'c2',
-          dbId: 'c2',
-          drop: 'DROP 1',
-          dropLoc: deliveryLocation,
-          vin: 'JM1BL1H2F01121234',
-          makeModel: 'Mazda 3 Hatchback',
-          color: 'Black',
-          plate: 'C00467',
-          delivered: false,
-          time: null,
-          photos: { current: 0, total: 4, percent: 0 }
-        }
-      ];
-    }
-
-    const totalCarsCount = load?.items?.length || cars.length;
+    const totalCarsCount = cars.length;
     const deliveredCount = cars.filter(c => c.delivered).length;
 
     const responseData = {
-      id: load?.loadRef || 'LD-3987',
-      dbId: load?.id || null,
+      id: load.loadRef || load.loadNumber || load.id,
+      dbId: load.id,
       origin,
       destination,
       pickupLocation: deliveryLocation,
@@ -1341,6 +1227,7 @@ exports.getActiveRun = async (req, res, next) => {
       load = await prisma.load.findFirst({
         where: {
           driverId,
+          ...(driver?.companyId && { companyId: driver.companyId }),
           status: { in: ['ASSIGNED', 'PLANNED', 'DISPATCHED', 'ACTIVE', 'IN_TRANSIT', 'ARRIVED_PICKUP', 'LOADING'] }
         },
         include: {
@@ -1353,6 +1240,10 @@ exports.getActiveRun = async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => null);
+    }
+
+    if (!load) {
+      return sendSuccess(res, { run: null, currentLoad: null });
     }
 
     let origin = null;
