@@ -1262,9 +1262,30 @@ exports.createAsset = async (req, res, next) => {
     const companyId = await resolveCompanyId(req);
     const payload = { ...req.body };
 
-    const branchObj = await prisma.branch.findFirst({
-      where: companyId ? { companyId } : {}
+    if (!payload.branchId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Branch is required' }
+      });
+    }
+
+    const branchObj = await prisma.branch.findUnique({
+      where: { id: payload.branchId }
     });
+
+    if (!branchObj) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Branch not found' }
+      });
+    }
+
+    if (companyId && branchObj.companyId !== companyId) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Branch belongs to a different company' }
+      });
+    }
 
     const statusMap = {
       'Active': 'ACTIVE',
@@ -1299,7 +1320,7 @@ exports.createAsset = async (req, res, next) => {
       condition: conditionMap[payload.condition] || (payload.condition ? payload.condition.toUpperCase() : undefined),
       purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
       purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
-      branchId: payload.branchId || branchObj?.id || undefined
+      branchId: payload.branchId
     };
 
     const photoVal = payload.photoUrl || payload.image || payload.photo || null;
