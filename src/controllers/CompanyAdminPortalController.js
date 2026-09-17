@@ -1299,7 +1299,7 @@ exports.createAsset = async (req, res, next) => {
       condition: conditionMap[payload.condition] || (payload.condition ? payload.condition.toUpperCase() : undefined),
       purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
       purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
-      branchId: payload.branchId || branchObj?.id || 'fce20507-9461-4961-9143-ac4b2a3a2403'
+      branchId: payload.branchId || branchObj?.id || undefined
     };
 
     const photoVal = payload.photoUrl || payload.image || payload.photo || null;
