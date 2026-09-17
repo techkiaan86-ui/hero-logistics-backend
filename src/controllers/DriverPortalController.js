@@ -299,13 +299,15 @@ exports.getDashboard = async (req, res, next) => {
       currentLoad: currentLoadData,
       todaySchedule: scheduleItems,
       hosLog: {
-        driveTimeElapsed: driveTimeStr,
-        driveTimeLeft: remDriveStr,
-        drivePercent: Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)),
-        shiftElapsed: `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m`,
+        driveTimeElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? driveTimeStr : '0h 00m',
+        driveTimeLeft: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? remDriveStr : '--',
+        drivePercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)) : 0,
+        shiftElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m` : '0h 00m',
         shiftMax: '14h max',
-        shiftPercent: Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)),
-        nextBreakDue: driveMinutes > 0 ? `in ${Math.max(0, 4 - Math.floor(driveMinutes / 60))}h` : 'in 4h 00m'
+        shiftPercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)) : 0,
+        nextBreakDue: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status)
+          ? (driveMinutes > 0 ? `in ${Math.max(0, 4 - Math.floor(driveMinutes / 60))}h` : 'in 4h 00m')
+          : 'Shift Not Started'
       },
       unreadMessages: formattedMessages,
       alerts: alerts,
