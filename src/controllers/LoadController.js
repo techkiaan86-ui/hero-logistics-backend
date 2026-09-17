@@ -233,6 +233,7 @@ exports.create = async (req, res, next) => {
     // Convert plain items array to Prisma nested create object
     if (Array.isArray(payload.items)) {
       const itemsData = payload.items.map(i => ({
+        // Common & Car Carrying
         stockRef: i.stockRef || i.rego || i.vin || 'ITEM-REF',
         make: i.make || null,
         model: i.model || null,
@@ -240,7 +241,33 @@ exports.create = async (req, res, next) => {
         vin: i.vin || null,
         year: i.year ? parseInt(i.year) : null,
         color: i.colour || i.color || null,
-        quantity: i.quantity ? parseInt(i.quantity) : 1
+        quantity: i.quantity ? parseInt(i.quantity) : 1,
+        lengthMm: i.lengthMm ? parseInt(i.lengthMm) : (i.length ? parseInt(i.length.replace(/,/g, '')) : null),
+        widthMm: i.widthMm ? parseInt(i.widthMm) : (i.width ? parseInt(i.width.replace(/,/g, '')) : null),
+        heightMm: i.heightMm ? parseInt(i.heightMm) : (i.height ? parseInt(i.height.replace(/,/g, '')) : null),
+        weightKg: i.weightKg ? parseInt(i.weightKg) : (i.weight ? parseInt(i.weight.replace(/,/g, '')) : null),
+        vehicleType: i.vehicleType || null,
+        keys: i.keys === 'Yes' || i.keys === true,
+        damageReportReq: i.damageReport === 'Yes' || i.damageReportReq === true,
+        notes: i.notes || i.additionalNotes || null,
+        description: i.description || i.itemDescription || null,
+
+        // General Freight
+        pallets: i.pallets ? parseInt(i.pallets) : null,
+        cubicMetres: i.cubicMetres ? parseFloat(i.cubicMetres) : null,
+        fragile: i.fragile === 'Yes' || i.fragile === true,
+        stackable: i.stackable === 'Yes' || i.stackable === true,
+        specialHandling: i.specialHandling || null,
+
+        // Dangerous Goods
+        unNumber: i.unNumber || null,
+        dgClass: i.dgClass || null,
+        packingGroup: i.packingGroup || null,
+        hazchemCode: i.hazchemCode || null,
+        msdsUploaded: i.msdsUploaded === 'Yes' || i.msdsUploaded === true,
+        emergencyContact: i.emergencyContact || null,
+        complianceChecklist: i.complianceChecklist === 'Yes' || i.complianceChecklist === true,
+        placarding: i.placarding === 'Yes' || i.placarding === true,
       }));
       payload.items = { create: itemsData };
     }

@@ -1994,6 +1994,24 @@ model LoadItem {
   vehicleType     String?
   keys            Boolean @default(true)
   damageReportReq Boolean @default(false)
+  
+  // General Freight Fields
+  pallets         Int?
+  cubicMetres     Float?
+  fragile         Boolean @default(false)
+  stackable       Boolean @default(false)
+  specialHandling String?
+
+  // Dangerous Goods Fields
+  unNumber            String?
+  dgClass             String?
+  packingGroup        String?
+  hazchemCode         String?
+  msdsUploaded        Boolean @default(false)
+  emergencyContact    String?
+  complianceChecklist Boolean @default(false)
+  placarding          Boolean @default(false)
+
   notes           String? @db.Text
 
   aiConfidence Float? // e.g., 94.0 for High confidence
