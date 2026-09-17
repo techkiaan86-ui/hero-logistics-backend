@@ -1295,8 +1295,8 @@ exports.createAsset = async (req, res, next) => {
       model: payload.model || null,
       year: payload.year ? parseInt(payload.year) : null,
       serialNumber: payload.serialNumber || null,
-      status: statusMap[payload.status] || (payload.status ? payload.status.toUpperCase() : ''),
-      condition: conditionMap[payload.condition] || (payload.condition ? payload.condition.toUpperCase() : ''),
+      status: statusMap[payload.status] || (payload.status ? payload.status.toUpperCase() : undefined),
+      condition: conditionMap[payload.condition] || (payload.condition ? payload.condition.toUpperCase() : undefined),
       purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
       purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
       branchId: payload.branchId || branchObj?.id || 'fce20507-9461-4961-9143-ac4b2a3a2403'
