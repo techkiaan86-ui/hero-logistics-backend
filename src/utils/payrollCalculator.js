@@ -69,21 +69,21 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
   if (normalizedType.includes('load')) {
     // === PER LOAD ===
     const ratePerLoad = rawRate > 0 ? rawRate : 250.00;
-    // If completed loads exist, use completed. If driver has active loads during period, include them.
-    const effectiveLoads = Math.max(completedLoadsCount + activeLoadsCount, 1);
+    const effectiveLoads = completedLoadsCount + activeLoadsCount;
     loadAllowance = Math.round(effectiveLoads * ratePerLoad * 100) / 100;
     basePay = loadAllowance;
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
     // === PER KM ===
     const ratePerKm = rawRate > 0 ? rawRate : 0.85;
-    const effectiveKm = Math.max(totalKmDriven, 850);
+    const effectiveKm = totalKmDriven;
     distanceAllow = Math.round(effectiveKm * ratePerKm * 100) / 100;
     basePay = distanceAllow;
   } else {
     // === HOURLY (Default) ===
     const hourlyRate = rawRate > 0 ? rawRate : 35.00;
-    // If timesheet has recorded hours use them, else fallback to standard 38-40 hr fortnight / active work
-    const effectiveHours = hoursWorked > 0 ? hoursWorked : (completedLoadsCount > 0 ? completedLoadsCount * 8 : 40);
+    const effectiveHours = hoursWorked > 0 
+      ? hoursWorked 
+      : (completedLoadsCount > 0 ? completedLoadsCount * 8 : (activeLoadsCount > 0 ? activeLoadsCount * 4 : 0));
     basePay = Math.round(effectiveHours * hourlyRate * 100) / 100;
   }
 
