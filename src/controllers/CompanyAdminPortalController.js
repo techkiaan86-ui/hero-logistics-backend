@@ -910,7 +910,14 @@ exports.createDriver = async (req, res, next) => {
       role: payload.role || payload.driverRole || 'Driver',
       category: payload.category || payload.driverCategory || null,
       shift: payload.shift || null,
-      companyId: effectiveCompanyId
+      companyId: effectiveCompanyId,
+      payType: payload.payType || payload.PayType || 'Hourly',
+      payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      bankName: payload.bankName || payload.BankName || null,
+      accountNumber: payload.accountNumber || payload.AccountNumber || null,
+      routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
+      taxNumber: payload.taxNumber || payload.TaxNumber || null,
+      superFund: payload.superFund || payload.SuperannuationFund || null
     };
 
     if (payload.employmentType || payload.EmploymentType) {
