@@ -16,12 +16,6 @@ const NotificationTemplateController = {
         orderBy: { createdAt: 'desc' }
       });
 
-      if (templates.length === 0 && companyId) {
-        templates = await prisma.notificationTemplate.findMany({
-          orderBy: { createdAt: 'desc' }
-        });
-      }
-
       return res.status(200).json({
         success: true,
         data: templates
@@ -56,8 +50,10 @@ const NotificationTemplateController = {
     
 
       if (!companyId) {
-        const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-        companyId = firstCompany?.id;
+        return res.status(403).json({
+          success: false,
+          error: { message: 'Company context required' }
+        });
       }
 
       const newTemplate = await prisma.notificationTemplate.create({
@@ -89,6 +85,21 @@ const NotificationTemplateController = {
   async delete(req, res) {
     try {
       const { id } = req.params;
+      const { resolveCompanyId } = require('../middlewares/tenantResolver');
+      const companyId = resolveCompanyId(req);
+      
+      const whereClause = { id };
+      if (companyId) {
+        whereClause.companyId = companyId;
+      } else if (req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ success: false, error: { message: 'Company context required' } });
+      }
+
+      const existing = await prisma.notificationTemplate.findFirst({ where: whereClause });
+      if (!existing) {
+        return res.status(404).json({ success: false, error: { message: 'Template not found' } });
+      }
+
       await prisma.notificationTemplate.delete({
         where: { id }
       });

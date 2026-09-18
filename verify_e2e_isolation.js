@@ -64,7 +64,7 @@ async function runVerification() {
 
     // Write Report
     const fs = require('fs');
-    const reportPath = 'C:/Users/DELL/.gemini/antigravity-ide/brain/fd9cd0a1-a524-4ecd-b751-1ae088b02306/artifacts/verification_report.md';
+    const reportPath = 'verification_report.md';
     let md = '# POST-FIX SECURITY VERIFICATION REPORT\n\n';
     md += 'STATUS: **' + (success ? 'PASS' : 'FAIL') + '**\n\n';
     md += '| Test | Method | Endpoint | Requesting | Target | Status | Result | Details |\n';

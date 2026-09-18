@@ -1,26 +1,30 @@
 const prisma = require('../utils/prismaClient');
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
 
 const NotificationRuleController = {
-  // Get all notification rules
+  // Get all notification rules — strictly scoped to tenant
   async getAll(req, res) {
     try {
-      const companyId = req.user?.companyId || req.headers['x-company-id'];
-      
-      let whereClause = {};
-      if (companyId) {
+      const companyId = resolveCompanyId(req);
+
+      if (!companyId && req.user?.role !== 'SUPER_ADMIN') {
+        return res.status(200).json({ success: true, data: [] });
+      }
+
+      const whereClause = {};
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        whereClause.companyId = companyId;
+      } else if (req.query.companyId) {
+        whereClause.companyId = req.query.companyId;
+      } else if (companyId) {
         whereClause.companyId = companyId;
       }
 
-      let rules = await prisma.notificationRule.findMany({
+      // NOTE: No fallback to all-company fetch — that would be a data breach
+      const rules = await prisma.notificationRule.findMany({
         where: whereClause,
         orderBy: { createdAt: 'desc' }
       });
-
-      if (rules.length === 0 && companyId) {
-        rules = await prisma.notificationRule.findMany({
-          orderBy: { createdAt: 'desc' }
-        });
-      }
 
       return res.status(200).json({
         success: true,
@@ -35,7 +39,7 @@ const NotificationRuleController = {
     }
   },
 
-  // Create new notification rule
+  // Create new notification rule — scoped to tenant
   async create(req, res) {
     try {
       const { name, trigger, channels, rec, recipient, priority, status } = req.body;
@@ -47,17 +51,16 @@ const NotificationRuleController = {
         });
       }
 
-      
-      const { resolveCompanyId } = require('../middlewares/tenantResolver');
       let companyId = resolveCompanyId(req);
       if (req.user?.role === 'SUPER_ADMIN' && req.body.companyId) {
         companyId = req.body.companyId;
       }
-    
 
       if (!companyId) {
-        const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-        companyId = firstCompany?.id;
+        return res.status(403).json({
+          success: false,
+          error: { message: 'Company context required to create a notification rule.' }
+        });
       }
 
       const newRule = await prisma.notificationRule.create({
@@ -86,13 +89,26 @@ const NotificationRuleController = {
     }
   },
 
-  // Delete notification rule
+  // Delete notification rule — with tenant ownership check
   async delete(req, res) {
     try {
       const { id } = req.params;
-      await prisma.notificationRule.delete({
-        where: { id }
-      });
+      const companyId = resolveCompanyId(req);
+
+      const findWhere = { id };
+      if (req.user?.role !== 'SUPER_ADMIN') {
+        if (!companyId) {
+          return res.status(204).send();
+        }
+        findWhere.companyId = companyId;
+      }
+
+      const existing = await prisma.notificationRule.findFirst({ where: findWhere });
+      if (!existing) {
+        return res.status(204).send();
+      }
+
+      await prisma.notificationRule.delete({ where: { id: existing.id } });
 
       return res.status(200).json({
         success: true,

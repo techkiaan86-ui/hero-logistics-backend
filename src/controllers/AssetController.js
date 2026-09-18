@@ -3,12 +3,22 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const { resolveCompanyId, getTenantWhere } = require('../middlewares/tenantResolver');
+
 // Get all Assets with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    
-    if (req.tenantId) where.branch = { companyId: req.tenantId };
+    const companyId = resolveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.companyId = companyId;
+    } else if (req.query.companyId) {
+      where.companyId = req.query.companyId;
+    }
 
     const [data, total] = await Promise.all([
       prisma.asset.findMany({
@@ -32,8 +42,15 @@ exports.getAll = async (req, res, next) => {
 // Get single Asset by ID
 exports.getById = async (req, res, next) => {
   try {
+    const companyId = resolveCompanyId(req);
     const where = { id: req.params.id };
-    if (req.tenantId) where.branch = { companyId: req.tenantId };
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Asset not found' }, HTTP_STATUS.NOT_FOUND);
+      }
+      where.companyId = companyId;
+    }
 
     const data = await prisma.asset.findFirst({
       where,
@@ -61,7 +78,19 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    if (req.tenantId && !payload.companyId) payload.companyId = req.tenantId;
+    const companyId = resolveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, {
+          code: ERROR_CODES.UNAUTHORIZED_ACCESS,
+          message: 'Company context is required to create an asset.'
+        }, HTTP_STATUS.FORBIDDEN);
+      }
+      payload.companyId = companyId;
+    } else {
+      payload.companyId = payload.companyId || companyId;
+    }
 
     const data = await prisma.asset.create({
       data: payload,
@@ -75,56 +104,54 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// Update Asset with Optimistic Concurrency check
+// Update Asset with tenant ownership check
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
-    
-    const where = { id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    delete updateData.companyId; // Prevent mutation of companyId
+    const companyId = resolveCompanyId(req);
 
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
-    }
-
-    try {
-      const data = await prisma.asset.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'Asset not found'
-        }, HTTP_STATUS.NOT_FOUND);
+    const findWhere = { id };
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Asset not found' }, HTTP_STATUS.NOT_FOUND);
       }
-      throw e;
+      findWhere.companyId = companyId;
     }
+
+    const existing = await prisma.asset.findFirst({ where: findWhere });
+    if (!existing) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Asset not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const data = await prisma.asset.update({
+      where: { id: existing.id },
+      data: updateData
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
 };
 
-// Delete Asset
+// Delete Asset with tenant ownership check
 exports.delete = async (req, res, next) => {
   try {
-    const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const companyId = resolveCompanyId(req);
+    const findWhere = { id: req.params.id };
 
-    await prisma.asset.delete({ where });
-    
-    // 204 No Content for successful delete
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) return res.status(HTTP_STATUS.NO_CONTENT).send();
+      findWhere.companyId = companyId;
+    }
+
+    const existing = await prisma.asset.findFirst({ where: findWhere });
+    if (!existing) {
+      return res.status(HTTP_STATUS.NO_CONTENT).send();
+    }
+
+    await prisma.asset.delete({ where: { id: existing.id } });
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
     if (error.code === 'P2025') {

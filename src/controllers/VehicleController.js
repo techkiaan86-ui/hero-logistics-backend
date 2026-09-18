@@ -5,12 +5,12 @@ const syncMissingVehicleColumns = require('../utils/syncDbColumns');
 const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
 
 // Get all Vehicles with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    const { resolveCompanyId } = require('../middlewares/tenantResolver');
     const companyId = resolveCompanyId(req);
     
     if (req.user?.role !== 'SUPER_ADMIN') {
@@ -50,7 +50,7 @@ exports.getAll = async (req, res, next) => {
 // Get single Vehicle by ID
 exports.getById = async (req, res, next) => {
   try {
-    const companyId = req.tenantId || req.user?.companyId;
+    const companyId = resolveCompanyId(req);
     const where = { id: req.params.id };
 
     if (req.user?.role !== 'SUPER_ADMIN') {

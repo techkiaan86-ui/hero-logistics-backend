@@ -2,11 +2,11 @@ const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
 
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    const { resolveCompanyId } = require('../middlewares/tenantResolver');
     const companyId = resolveCompanyId(req);
     if (companyId) {
       where.driver = { companyId };
@@ -26,7 +26,6 @@ exports.getAll = async (req, res, next) => {
 exports.getById = async (req, res, next) => {
   try {
     
-    const { resolveCompanyId } = require('../middlewares/tenantResolver');
     const companyId = resolveCompanyId(req);
     const where = { id: req.params.id };
     if (companyId) {

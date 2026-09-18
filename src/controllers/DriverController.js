@@ -3,11 +3,13 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
+
 // Get all Drivers with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    const companyId = req.tenantId || req.user?.companyId;
+    const companyId = resolveCompanyId(req);
     
     if (req.user?.role !== 'SUPER_ADMIN') {
       if (!companyId) {
@@ -45,7 +47,7 @@ exports.getAll = async (req, res, next) => {
 // Get single Driver by ID
 exports.getById = async (req, res, next) => {
   try {
-    const companyId = req.tenantId || req.user?.companyId;
+    const companyId = resolveCompanyId(req);
     const where = { id: req.params.id };
 
     if (req.user?.role !== 'SUPER_ADMIN') {
