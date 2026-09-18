@@ -1266,22 +1266,22 @@ exports.getAssets = async (req, res, next) => {
         id: a.assetId || a.id,
         realId: a.id,
         name: a.name,
-        category: a.category || 'Equipment',
-        type: a.type || 'General',
+        category: a.category || '',
+        type: a.type || '',
         make: a.make || '',
         model: a.model || '',
-        year: a.year || new Date().getFullYear(),
+        year: a.year || '',
         serialNumber: a.serialNumber || '',
         photoUrl: a.photoUrl || null,
         image: a.photoUrl || null,
-        branch: a.branch?.name || 'Sydney Head Office',
-        location: a.warehouseId ? `Warehouse ${a.warehouseId.slice(0, 4)}` : 'Yard - Sydney HO',
-        assignedTo: assigned,
-        status: statusMap[a.status] || a.status || 'Active',
-        condition: conditionMap[a.condition] || a.condition || 'Good',
-        nextService: a.nextServiceDue ? new Date(a.nextServiceDue).toLocaleDateString('en-GB') : '15 Sep 2026',
-        dueIn: '28 Days',
-        purchasePrice: a.purchasePrice || 0,
+        branch: a.branch?.name || '',
+        location: a.warehouseId ? `Warehouse ${a.warehouseId.slice(0, 4)}` : (a.branch?.location || ''),
+        assignedTo: assigned === 'Unassigned' ? '' : assigned,
+        status: statusMap[a.status] || a.status || '',
+        condition: conditionMap[a.condition] || a.condition || '',
+        nextService: a.nextServiceDue ? new Date(a.nextServiceDue).toLocaleDateString('en-GB') : '',
+        dueIn: '',
+        purchasePrice: a.purchasePrice || '',
         purchaseDate: a.purchaseDate ? new Date(a.purchaseDate).toLocaleDateString('en-GB') : ''
       };
     });
@@ -1325,9 +1325,30 @@ exports.createAsset = async (req, res, next) => {
     const companyId = await resolveCompanyId(req);
     const payload = { ...req.body };
 
-    const branchObj = await prisma.branch.findFirst({
-      where: companyId ? { companyId } : {}
+    if (!payload.branchId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Branch is required' }
+      });
+    }
+
+    const branchObj = await prisma.branch.findUnique({
+      where: { id: payload.branchId }
     });
+
+    if (!branchObj) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Branch not found' }
+      });
+    }
+
+    if (companyId && branchObj.companyId !== companyId) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'Branch belongs to a different company' }
+      });
+    }
 
     const statusMap = {
       'Active': 'ACTIVE',
@@ -1352,17 +1373,17 @@ exports.createAsset = async (req, res, next) => {
     const assetData = {
       assetId,
       name: payload.name || 'New Asset',
-      category: payload.category || 'Equipment',
-      type: payload.type || payload.makeModel || 'General',
+      category: payload.category || '',
+      type: payload.type || payload.makeModel || '',
       make: payload.make || null,
       model: payload.model || null,
       year: payload.year ? parseInt(payload.year) : null,
       serialNumber: payload.serialNumber || null,
-      status: statusMap[payload.status] || 'ACTIVE',
-      condition: conditionMap[payload.condition] || 'GOOD',
+      status: statusMap[payload.status] || (payload.status ? payload.status.toUpperCase() : undefined),
+      condition: conditionMap[payload.condition] || (payload.condition ? payload.condition.toUpperCase() : undefined),
       purchasePrice: payload.purchasePrice ? parseFloat(payload.purchasePrice) : null,
       purchaseDate: payload.purchaseDate ? new Date(payload.purchaseDate) : null,
-      branchId: payload.branchId || branchObj?.id || 'fce20507-9461-4961-9143-ac4b2a3a2403'
+      branchId: payload.branchId
     };
 
     const photoVal = payload.photoUrl || payload.image || payload.photo || null;
@@ -1538,33 +1559,33 @@ exports.getAssetById = async (req, res, next) => {
       realId: targetAsset.id,
       name: targetAsset.name,
       fullName: targetAsset.name,
-      category: targetAsset.category || 'Equipment',
-      categoryBadge: targetAsset.category || 'Equipment',
-      type: targetAsset.type || 'General',
+      category: targetAsset.category || '',
+      categoryBadge: targetAsset.category || '',
+      type: targetAsset.type || '',
       makeModel: `${targetAsset.make || ''} ${targetAsset.model || ''}`.trim() || targetAsset.name,
-      year: targetAsset.year ? String(targetAsset.year) : '-',
-      serialNo: targetAsset.serialNumber || '-',
-      serialNumberFull: targetAsset.serialNumber || '-',
+      year: targetAsset.year ? String(targetAsset.year) : '',
+      serialNo: targetAsset.serialNumber || '',
+      serialNumberFull: targetAsset.serialNumber || '',
       assetTag: targetAsset.assetId || targetAsset.id,
-      branch: targetAsset.branch?.name || 'Sydney Head Office',
-      location: targetAsset.branch?.location || 'Sydney Head Office',
-      currentLocation: targetAsset.warehouseId ? `Warehouse ${targetAsset.warehouseId.slice(0, 4)}` : (targetAsset.branch?.location || 'Yard'),
-      assignedTo: targetAsset.assignments?.[0]?.assignedTo || 'Unassigned',
-      status: statusMap[targetAsset.status] || targetAsset.status || 'Active',
-      condition: conditionMap[targetAsset.condition] || targetAsset.condition || 'Good',
-      purchaseDate: targetAsset.purchaseDate ? new Date(targetAsset.purchaseDate).toLocaleDateString('en-GB') : '-',
-      purchasePrice: targetAsset.purchasePrice ? `$${targetAsset.purchasePrice.toLocaleString('en-US')} AUD` : '-',
-      bookValue: targetAsset.bookValue ? `$${targetAsset.bookValue.toLocaleString('en-US')} AUD` : (targetAsset.purchasePrice ? `$${targetAsset.purchasePrice.toLocaleString('en-US')} AUD` : '-'),
-      supplier: targetAsset.supplier || '-',
-      warrantyExpiry: targetAsset.warrantyExpiry ? new Date(targetAsset.warrantyExpiry).toLocaleDateString('en-GB') : '-',
+      branch: targetAsset.branch?.name || '',
+      location: targetAsset.branch?.location || '',
+      currentLocation: targetAsset.warehouseId ? `Warehouse ${targetAsset.warehouseId.slice(0, 4)}` : (targetAsset.branch?.location || ''),
+      assignedTo: targetAsset.assignments?.[0]?.assignedTo || '',
+      status: statusMap[targetAsset.status] || targetAsset.status || '',
+      condition: conditionMap[targetAsset.condition] || targetAsset.condition || '',
+      purchaseDate: targetAsset.purchaseDate ? new Date(targetAsset.purchaseDate).toLocaleDateString('en-GB') : '',
+      purchasePrice: targetAsset.purchasePrice ? `$${targetAsset.purchasePrice.toLocaleString('en-US')} AUD` : '',
+      bookValue: targetAsset.bookValue ? `$${targetAsset.bookValue.toLocaleString('en-US')} AUD` : (targetAsset.purchasePrice ? `$${targetAsset.purchasePrice.toLocaleString('en-US')} AUD` : ''),
+      supplier: targetAsset.supplier || '',
+      warrantyExpiry: targetAsset.warrantyExpiry ? new Date(targetAsset.warrantyExpiry).toLocaleDateString('en-GB') : '',
       warrantyDaysLeft: '',
-      usageType: 'Operational',
-      operatingHours: targetAsset.operatingHours ? `${targetAsset.operatingHours} Hrs` : '0 Hrs',
-      odometer: targetAsset.operatingHours ? `${targetAsset.operatingHours} Hrs` : '0 Hrs',
-      nextService: targetAsset.nextServiceDue ? new Date(targetAsset.nextServiceDue).toLocaleDateString('en-GB') : '-',
+      usageType: targetAsset.usageType || '',
+      operatingHours: targetAsset.operatingHours ? `${targetAsset.operatingHours} Hrs` : '',
+      odometer: targetAsset.operatingHours ? `${targetAsset.operatingHours} Hrs` : '',
+      nextService: targetAsset.nextServiceDue ? new Date(targetAsset.nextServiceDue).toLocaleDateString('en-GB') : '',
       nextServiceDays: '',
-      description: targetAsset.description || 'No description provided.',
-      notes: targetAsset.notes || 'No special operational notes recorded.',
+      description: targetAsset.description || '',
+      notes: targetAsset.notes || '',
       photoUrl: targetAsset.photoUrl || null,
       image: targetAsset.photoUrl || null,
       assignments: targetAsset.assignments.map(a => ({
@@ -3987,19 +4008,19 @@ exports.getWarehouses = async (req, res, next) => {
       id: w.id,
       code: w.code,
       name: w.name,
-      type: w.type || 'General',
-      status: w.status || 'Active',
+      type: w.type || '',
+      status: w.status || '',
       photoUrl: w.photoUrl || null,
       image: w.photoUrl || null,
-      branch: w.branch ? w.branch.name : 'Sydney Main',
-      addr: w.address || `${w.city || 'Sydney'}, ${w.state || 'NSW'}`,
+      branch: w.branch ? w.branch.name : '',
+      addr: w.address || (w.city ? `${w.city}, ${w.state || ''}` : ''),
       city: w.city || '',
       state: w.state || '',
       postalCode: w.postalCode || '',
-      totalAreaSqm: w.totalAreaSqm || 15000,
-      palletCapacity: w.palletCapacity || 4500,
-      loadingDocks: w.loadingDocks || 12,
-      util: Math.floor(60 + Math.random() * 30),
+      totalAreaSqm: w.totalAreaSqm || null,
+      palletCapacity: w.palletCapacity || null,
+      loadingDocks: w.loadingDocks || null,
+      util: w.util || 0,
       stock: (w.stockItems || []).length,
       value: '$' + ((w.stockItems || []).length * 1250).toLocaleString()
     }));
@@ -4065,17 +4086,18 @@ exports.createWarehouse = async (req, res, next) => {
       });
     }
 
-    const warehouseCode = payload.code && String(payload.code).trim()
-      ? String(payload.code).trim()
-      : `WH-${Math.floor(100 + Math.random() * 900)}`;
+    if (!payload.code || !String(payload.code).trim()) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Warehouse Code is required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+    const warehouseCode = String(payload.code).trim();
 
     const photoVal = payload.photoUrl || payload.image || payload.photo || null;
 
     const warehouseData = {
       code: warehouseCode,
       name: payload.name,
-      type: payload.type || 'General',
-      status: payload.status || 'Active',
+      type: payload.type || '',
+      status: payload.status || '',
       totalAreaSqm: payload.totalAreaSqm ? parseInt(payload.totalAreaSqm) : null,
       palletCapacity: payload.palletCapacity ? parseInt(payload.palletCapacity) : null,
       loadingDocks: payload.loadingDocks ? parseInt(payload.loadingDocks) : null,
@@ -4111,13 +4133,13 @@ exports.createWarehouse = async (req, res, next) => {
       id: newWh.id,
       code: newWh.code,
       name: newWh.name,
-      type: newWh.type,
-      status: newWh.status,
-      branch: newWh.branch ? newWh.branch.name : 'Sydney Main',
-      addr: newWh.address || `${newWh.city || ''}, ${newWh.state || ''}`,
-      totalAreaSqm: newWh.totalAreaSqm || 15000,
-      palletCapacity: newWh.palletCapacity || 4500,
-      loadingDocks: newWh.loadingDocks || 12,
+      type: newWh.type || '',
+      status: newWh.status || '',
+      branch: newWh.branch ? newWh.branch.name : '',
+      addr: newWh.address || (newWh.city ? `${newWh.city}, ${newWh.state || ''}` : ''),
+      totalAreaSqm: newWh.totalAreaSqm || null,
+      palletCapacity: newWh.palletCapacity || null,
+      loadingDocks: newWh.loadingDocks || null,
       util: 65,
       stock: 0,
       value: '$0'
@@ -4133,14 +4155,14 @@ exports.updateWarehouse = async (req, res, next) => {
     const payload = { ...req.body };
     
     const updateData = {};
-    if (payload.name) updateData.name = payload.name;
-    if (payload.code) updateData.code = payload.code;
-    if (payload.type) updateData.type = payload.type;
-    if (payload.status) updateData.status = payload.status;
-    if (payload.totalAreaSqm) updateData.totalAreaSqm = parseInt(payload.totalAreaSqm);
-    if (payload.palletCapacity) updateData.palletCapacity = parseInt(payload.palletCapacity);
-    if (payload.loadingDocks) updateData.loadingDocks = parseInt(payload.loadingDocks);
-    if (payload.address || payload.addr) updateData.address = payload.address || payload.addr;
+    if (payload.name !== undefined) updateData.name = payload.name;
+    if (payload.code !== undefined) updateData.code = payload.code;
+    if (payload.type !== undefined) updateData.type = payload.type;
+    if (payload.status !== undefined) updateData.status = payload.status;
+    if (payload.totalAreaSqm !== undefined) updateData.totalAreaSqm = payload.totalAreaSqm ? parseInt(payload.totalAreaSqm) : null;
+    if (payload.palletCapacity !== undefined) updateData.palletCapacity = payload.palletCapacity ? parseInt(payload.palletCapacity) : null;
+    if (payload.loadingDocks !== undefined) updateData.loadingDocks = payload.loadingDocks ? parseInt(payload.loadingDocks) : null;
+    if (payload.address !== undefined || payload.addr !== undefined) updateData.address = payload.address || payload.addr;
 
     const photoVal = payload.photoUrl || payload.image || payload.photo;
 
