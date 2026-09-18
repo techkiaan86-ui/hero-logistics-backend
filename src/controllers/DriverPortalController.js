@@ -1,3 +1,4 @@
+const { calculateDriverPay } = require('../utils/payrollCalculator');
 const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
@@ -214,12 +215,21 @@ exports.getDashboard = async (req, res, next) => {
     const remMins = remainingDriveMinutes % 60;
     const remDriveStr = `${remHours}h ${remMins < 10 ? '0' : ''}${remMins}m (HOS)`;
 
-    // Pay calculation: completed trips * payRate or hourly rate * hours
-    const baseRate = driver.payRate || 0;
-    const calculatedPay = completedLoads.length > 0
-      ? (completedLoads.length * (baseRate > 0 ? baseRate : 350) * 0.8)
-      : (driveMinutes > 0 ? (driveMinutes / 60) * (baseRate > 0 ? baseRate : 35) : 0);
-
+    // Dynamic pay calculation respecting driver.payType ("Hourly", "Per Load", "Per Km")
+    const baseRate = parseFloat(driver.payRate) || 0;
+    const pType = (driver.payType || 'Hourly').toLowerCase();
+    let rawGross = 0;
+    if (pType.includes('load')) {
+      const loadCnt = completedLoads.length || (activeLoads.length > 0 ? activeLoads.length : 1);
+      rawGross = loadCnt * (baseRate > 0 ? baseRate : 250);
+    } else if (pType.includes('km')) {
+      const dist = (completedLoads.length || 1) * 650;
+      rawGross = dist * (baseRate > 0 ? baseRate : 0.85);
+    } else {
+      const hrs = driveMinutes > 0 ? (driveMinutes / 60) : (completedLoads.length > 0 ? completedLoads.length * 8 : 8);
+      rawGross = hrs * (baseRate > 0 ? baseRate : 35);
+    }
+    const calculatedPay = Math.round(rawGross * 0.85 * 100) / 100;
 
     // Schedule items purely from assigned loads
     const scheduleItems = [];
@@ -2439,10 +2449,30 @@ exports.getPayrollData = async (req, res, next) => {
     const totalGrossEarnings = totalNetPaid; // Use actual when DriverPayRate/allowance records are available
     const pendingPayments = payRecords.filter(r => r.status === 'Processing' || r.status === 'Pending').reduce((s, r) => s + (r.amount || 0), 0);
 
-    // Latest pay period for current period display
+    // Calculate live dynamic pay based on driver profile payType and payRate
     const latestPeriod = dbPayPeriods?.[0] || null;
-    const latestNetPay = latestPeriod?.netPay || 0;
-    const nextPeriod = dbPayPeriods?.[1] || null;
+    const livePay = await calculateDriverPay({
+      driver,
+      startDate: latestPeriod?.periodStart,
+      endDate: latestPeriod?.periodEnd,
+      companyId: driver.companyId
+    });
+
+    const hasDbPeriod = !!(latestPeriod && (latestPeriod.netPay || latestPeriod.grossEarnings));
+    const effectiveNetPay = hasDbPeriod ? latestPeriod.netPay : livePay.netPay;
+    const effectiveGross = hasDbPeriod ? (latestPeriod.grossEarnings || latestPeriod.basePay) : livePay.grossEarnings;
+    const effectiveBase = hasDbPeriod ? (latestPeriod.basePay || 0) : livePay.basePay;
+    const effectiveLoadAllow = hasDbPeriod ? (latestPeriod.loadAllowance || 0) : livePay.loadAllowance;
+    const effectiveDistAllow = hasDbPeriod ? (latestPeriod.distanceAllow || 0) : livePay.distanceAllow;
+    const effectiveTax = hasDbPeriod ? (latestPeriod.paygTax || 0) : livePay.paygTax;
+    const effectiveSuper = hasDbPeriod ? (latestPeriod.superAmount || 0) : livePay.superAmount;
+    const effectiveDed = hasDbPeriod ? (latestPeriod.totalDeductions || (effectiveTax + effectiveSuper)) : livePay.totalDeductions;
+
+    const fmtMoney = (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    const nextPaymentPeriodStr = latestPeriod?.periodStart && latestPeriod?.periodEnd
+      ? `${new Date(latestPeriod.periodStart).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })} - ${new Date(latestPeriod.periodEnd).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}`
+      : `Current ${livePay.payType} Pay Cycle`;
 
     return sendSuccess(res, {
       driverInfo: {
@@ -2450,50 +2480,48 @@ exports.getPayrollData = async (req, res, next) => {
         bankName,
         bsbNumber,
         accountNumber,
-        accountName: driverName
+        accountName: driverName,
+        payType: driver.payType || 'Hourly',
+        payRate: driver.payRate ? `$${Number(driver.payRate).toFixed(2)}` : '$35.00'
       },
       currentPeriod: {
-        netPay: `$${latestNetPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        grossEarnings: '$0.00',
-        totalDeductions: '$0.00',
-        payFrequency: 'Fortnightly',
-        nextPayment: latestPeriod ? {
-          date: latestPeriod.payDate ? new Date(latestPeriod.payDate).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '--',
-          daysLeft: latestPeriod.payDate ? Math.max(0, Math.ceil((new Date(latestPeriod.payDate) - new Date()) / (1000 * 60 * 60 * 24))) : 0,
-          period: latestPeriod.periodStart && latestPeriod.periodEnd
-            ? `${new Date(latestPeriod.periodStart).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })} – ${new Date(latestPeriod.periodEnd).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}`
-            : '--',
-          estimatedNetPay: `$${latestNetPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-          status: latestPeriod.status || '--'
-        } : { date: '--', daysLeft: 0, period: '--', estimatedNetPay: '$0.00', status: '--' }
+        netPay: fmtMoney(effectiveNetPay),
+        grossEarnings: fmtMoney(effectiveGross),
+        totalDeductions: fmtMoney(effectiveDed),
+        payFrequency: latestPeriod?.frequency || 'Fortnightly',
+        nextPayment: {
+          date: latestPeriod?.payDate ? new Date(latestPeriod.payDate).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : 'Next Scheduled Pay Cycle',
+          daysLeft: latestPeriod?.payDate ? Math.max(0, Math.ceil((new Date(latestPeriod.payDate) - new Date()) / (1000 * 60 * 60 * 24))) : 5,
+          period: nextPaymentPeriodStr,
+          estimatedNetPay: fmtMoney(effectiveNetPay),
+          status: latestPeriod?.status || 'Active Accrual'
+        }
       },
       ytdSummary: {
         financialYear: `Financial Year ${new Date().getFullYear() - 1}/${String(new Date().getFullYear()).slice(-2)}`,
-        totalEarnings: `$${totalGrossEarnings.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        netPayReceived: `$${totalNetPaid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        pendingPayments: `$${pendingPayments.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        totalDeductions: '$0.00'
+        totalEarnings: fmtMoney(totalGrossEarnings > 0 ? totalGrossEarnings : effectiveGross),
+        netPayReceived: fmtMoney(totalNetPaid > 0 ? totalNetPaid : effectiveNetPay),
+        pendingPayments: fmtMoney(pendingPayments > 0 ? pendingPayments : (latestPeriod?.status === 'PROCESSING' ? effectiveNetPay : 0)),
+        totalDeductions: fmtMoney(effectiveDed)
       },
       currentPayBreakdown: {
-        period: latestPeriod
-          ? `${new Date(latestPeriod.periodStart).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${new Date(latestPeriod.periodEnd).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}`
-          : '--',
+        period: nextPaymentPeriodStr,
         earnings: {
-          basePay: '$0.00',
-          loadAllowance: '$0.00',
-          distanceAllowance: '$0.00',
+          basePay: fmtMoney(effectiveBase),
+          loadAllowance: fmtMoney(effectiveLoadAllow),
+          distanceAllowance: fmtMoney(effectiveDistAllow),
           otherAllowances: '$0.00',
-          totalEarnings: `$${latestNetPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          totalEarnings: fmtMoney(effectiveGross)
         },
         deductions: {
-          paygTax: '$0.00',
-          superannuation: '$0.00',
+          paygTax: fmtMoney(effectiveTax),
+          superannuation: fmtMoney(effectiveSuper),
           unionFees: '$0.00',
           otherDeductions: '$0.00',
-          totalDeductions: '$0.00'
+          totalDeductions: fmtMoney(effectiveDed)
         },
-        estimatedNetPay: `$${latestNetPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        paySummaryTotalDeductions: '$0.00'
+        estimatedNetPay: fmtMoney(effectiveNetPay),
+        paySummaryTotalDeductions: fmtMoney(effectiveDed)
       },
       payHistory: payRecords,
       totalSummary: {

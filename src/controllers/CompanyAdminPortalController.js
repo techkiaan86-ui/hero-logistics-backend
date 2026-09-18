@@ -1,3 +1,4 @@
+const { calculateDriverPay } = require('../utils/payrollCalculator');
 const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
@@ -2058,38 +2059,58 @@ exports.createPayrollRun = async (req, res, next) => {
     if (driverIds && Array.isArray(driverIds) && driverIds.length > 0) {
       whereDrivers.id = { in: driverIds };
     }
-    let drivers = await prisma.driver.findMany({ where: whereDrivers, select: { id: true } });
+    let drivers = await prisma.driver.findMany({
+      where: whereDrivers,
+      select: { id: true, firstName: true, lastName: true, payType: true, payRate: true, companyId: true }
+    });
 
     if (drivers.length === 0) {
       return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'No drivers found for this company to process payroll run.' }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    const basePayAmount = parseFloat(basePay) || 1000;
-    const grossEarnings = basePayAmount;
-    const paygTax = grossEarnings * 0.2;
-    const superAmount = grossEarnings * 0.11;
-    const totalDeductions = paygTax + superAmount;
-    const netPay = grossEarnings - totalDeductions;
+    // Dynamic individualized pay calculation per driver based on Hourly, Per Load, Per Km
+    const payPeriodData = [];
+    let batchTotalGross = 0;
 
-    // Create PayPeriod for each driver in the batch
-    const payPeriodData = drivers.map(d => ({
-      id: require('crypto').randomUUID(),
-      driverId: d.id,
-      periodStart: new Date(periodStart),
-      periodEnd: new Date(periodEnd),
-      payDate: payDate ? new Date(payDate) : null,
-      frequency: frequency || 'WEEKLY',
-      status: 'DRAFT',
-      basePay: basePayAmount,
-      grossEarnings,
-      paygTax,
-      superAmount,
-      totalDeductions,
-      netPay,
-      companyId
-    }));
+    for (const d of drivers) {
+      const calc = await calculateDriverPay({
+        driver: d,
+        startDate: periodStart,
+        endDate: periodEnd,
+        companyId
+      });
 
-    // Use createMany for efficiency
+      const basePayAmount = calc.basePay;
+      const grossEarnings = calc.grossEarnings;
+      const paygTax = calc.paygTax;
+      const superAmount = calc.superAmount;
+      const totalDeductions = calc.totalDeductions;
+      const netPay = calc.netPay;
+
+      batchTotalGross += grossEarnings;
+
+      payPeriodData.push({
+        id: require('crypto').randomUUID(),
+        driverId: d.id,
+        periodStart: new Date(periodStart),
+        periodEnd: new Date(periodEnd),
+        payDate: payDate ? new Date(payDate) : null,
+        frequency: frequency || 'WEEKLY',
+        status: 'DRAFT',
+        basePay: basePayAmount,
+        loadAllowance: calc.loadAllowance || 0,
+        distanceAllow: calc.distanceAllow || 0,
+        otherAllowance: calc.otherAllowance || 0,
+        bonuses: calc.bonuses || 0,
+        grossEarnings,
+        paygTax,
+        superAmount,
+        totalDeductions,
+        netPay,
+        companyId
+      });
+    }
+
     await prisma.payPeriod.createMany({ data: payPeriodData });
 
     // Fetch created records with driver info
@@ -2103,7 +2124,7 @@ exports.createPayrollRun = async (req, res, next) => {
       message: `Payroll run created for ${drivers.length} drivers`,
       runName: name || `Payroll Run ${new Date(periodStart).toLocaleDateString()} - ${new Date(periodEnd).toLocaleDateString()}`,
       driverCount: drivers.length,
-      totalGross: basePayAmount * drivers.length,
+      totalGross: batchTotalGross,
       payPeriods: created
     }, HTTP_STATUS.CREATED);
   } catch (error) { next(error); }
