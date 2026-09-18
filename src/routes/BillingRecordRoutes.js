@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const BillingRecordController = require('../controllers/BillingRecordController');
-// const auth = require('../middlewares/auth');
+const { verifyToken } = require('../middlewares/auth');
+const { resolveTenant } = require('../middlewares/tenantResolver');
 
-// Default open for testing, uncomment auth to protect routes
-// router.use(auth.verifyToken);
+router.use(verifyToken, resolveTenant);
 
 router.route('/')
   .get(BillingRecordController.getAll)

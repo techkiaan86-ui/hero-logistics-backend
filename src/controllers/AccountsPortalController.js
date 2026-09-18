@@ -16,8 +16,11 @@ const resolveCompanyId = async (req) => {
     if (user?.companyId) return user.companyId;
   }
   
-  const firstCompany = await prisma.company.findFirst({ select: { id: true } });
-  return firstCompany?.id || '';
+  if (req.user?.role === 'SUPER_ADMIN' && req.query?.companyId) {
+    return req.query.companyId;
+  }
+  
+  return null;
 };
 
 // Map status safely to DB enum values

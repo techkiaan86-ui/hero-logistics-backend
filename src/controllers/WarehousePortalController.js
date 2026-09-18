@@ -2477,21 +2477,25 @@ exports.submitSafetyChecklist = async (req, res, next) => {
     });
 
     if (!driver) {
-      let companyId = req.tenantId || (await prisma.company.findFirst())?.id;
-      driver = await prisma.driver.findFirst({ where: { companyId } });
-      if (!driver) {
-        driver = await prisma.driver.findFirst();
+      const companyId = req.tenantId || req.user?.companyId;
+      if (companyId) {
+        driver = await prisma.driver.findFirst({ where: { companyId } });
       }
       if (!driver && companyId) {
         driver = await prisma.driver.create({
           data: {
-            name: 'Warehouse Safety Operator',
+            firstName: 'Warehouse',
+            lastName: 'Operator',
             email: `wh-safety-${Date.now()}@herologistics.com`,
             phone: '+61400000000',
             companyId
           }
-        });
+        }).catch(() => null);
       }
+    }
+
+    if (!driver) {
+      return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'No driver or company scope found for this safety checklist.' }, HTTP_STATUS.FORBIDDEN);
     }
 
     if (!driver) {
@@ -5040,7 +5044,8 @@ exports.sendMessage = async (req, res, next) => {
     }
 
     if (!existingConv) {
-      const companyId = req.tenantId || (await prisma.company.findFirst()).id;
+      const companyId = req.tenantId || req.user?.companyId;
+      if (!companyId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required.' }, HTTP_STATUS.FORBIDDEN);
       const conv = await prisma.conversation.create({
         data: {
           title: 'General Support',
@@ -5076,13 +5081,15 @@ exports.sendMessage = async (req, res, next) => {
 exports.createSupportTicket = async (req, res, next) => {
   try {
     const { subject, category, priority, description } = req.body;
-    const companyId = req.tenantId || (await prisma.company.findFirst()).id;
+    const companyId = req.tenantId || req.user?.companyId;
+    if (!companyId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required.' }, HTTP_STATUS.FORBIDDEN);
     const senderId = req.user?.id;
 
     // Find an Admin user in the system to assign/notify
     const adminUser = await prisma.user.findFirst({
       where: {
-        role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN', 'ADMIN'] }
+        companyId,
+        role: { in: ['COMPANY_ADMIN', 'ADMIN'] }
       }
     });
 
@@ -5098,8 +5105,6 @@ exports.createSupportTicket = async (req, res, next) => {
       }
     });
 
-    console.log(`[TICKET NOTIFICATION] New Support Ticket #${ticket.ticketNumber || ticket.id} created by Customer (${senderId || 'Demo'}) for Admin (${adminUser?.email || 'System Admin'})`);
-
     return sendSuccess(res, { ticket }, HTTP_STATUS.CREATED);
   } catch (error) {
     next(error);
@@ -5113,15 +5118,13 @@ exports.createSupportTicket = async (req, res, next) => {
 exports.clockIn = async (req, res, next) => {
   try {
     const userId = req.user?.userId || req.user?.id;
-    const companyId = req.tenantId || (await prisma.company.findFirst())?.id;
+    const companyId = req.tenantId || req.user?.companyId;
+    if (!companyId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required.' }, HTTP_STATUS.FORBIDDEN);
     
     let realUserId = userId;
-    const driverCheck = await prisma.driver.findFirst({ where: { OR: [{ id: userId }, { userId: userId }] } });
+    const driverCheck = await prisma.driver.findFirst({ where: { companyId, OR: [{ id: userId }, { userId: userId }] } });
     if (driverCheck) {
       realUserId = driverCheck.id;
-    } else {
-      const firstDriver = await prisma.driver.findFirst();
-      if (firstDriver) realUserId = firstDriver.id;
     }
 
     const today = new Date();
@@ -5542,7 +5545,8 @@ exports.sendMessage = async (req, res, next) => {
 
     let targetConvId = conversationId;
     if (!targetConvId) {
-      const companyId = req.tenantId || (await prisma.company.findFirst()).id;
+      const companyId = req.tenantId || req.user?.companyId;
+      if (!companyId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required.' }, HTTP_STATUS.FORBIDDEN);
       const conv = await prisma.conversation.create({
         data: {
           title: 'General Support',
@@ -5578,7 +5582,8 @@ exports.sendMessage = async (req, res, next) => {
 exports.createSupportTicket = async (req, res, next) => {
   try {
     const { subject, category, priority, description } = req.body;
-    const companyId = req.tenantId || (await prisma.company.findFirst()).id;
+    const companyId = req.tenantId || req.user?.companyId;
+    if (!companyId) return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required.' }, HTTP_STATUS.FORBIDDEN);
 
     const ticket = await prisma.supportTicket.create({
       data: {

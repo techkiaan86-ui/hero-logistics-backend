@@ -80,7 +80,8 @@ exports.getDashboard = async (req, res, next) => {
         include: {
           truck: true,
           items: true,
-          expenses: true
+          expenses: true,
+          stops: true
         },
         orderBy: { createdAt: 'desc' }
       }).catch(() => []),
@@ -129,20 +130,43 @@ exports.getDashboard = async (req, res, next) => {
 
     if (currentLoadObj) {
       const statusLabel = currentLoadObj.status === 'IN_TRANSIT' ? 'In Transit' : (currentLoadObj.status === 'DISPATCHED' ? 'Dispatched' : 'Assigned');
+      
+      let origin = currentLoadObj.origin || currentLoadObj.pickupAddress;
+      let destination = currentLoadObj.destination || currentLoadObj.deliveryAddress;
+      let pickupAddr = currentLoadObj.pickupAddress || 'No Address Provided';
+      let deliveryAddr = currentLoadObj.deliveryAddress || 'No Address Provided';
+      let pickupContact = currentLoadObj.pickupLocation || 'Pickup Location';
+      let deliveryContact = currentLoadObj.deliveryLocation || 'Delivery Location';
+
+      if (Array.isArray(currentLoadObj.stops) && currentLoadObj.stops.length > 0) {
+        const pStop = currentLoadObj.stops.find(s => s.type === 'PICKUP') || currentLoadObj.stops[0];
+        const dStop = currentLoadObj.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || currentLoadObj.stops[currentLoadObj.stops.length - 1];
+        if (pStop) {
+          pickupAddr = pStop.address || pickupAddr;
+          pickupContact = pStop.contactName || pickupContact;
+          origin = origin || pickupAddr.split(',')[0]?.trim();
+        }
+        if (dStop) {
+          deliveryAddr = dStop.address || deliveryAddr;
+          deliveryContact = dStop.contactName || deliveryContact;
+          destination = destination || deliveryAddr.split(',')[0]?.trim();
+        }
+      }
+
       currentLoadData = {
         id: currentLoadObj.id,
         loadNumber: currentLoadObj.loadNumber || currentLoadObj.loadRef || `LD-${currentLoadObj.id.slice(0, 4).toUpperCase()}`,
         status: statusLabel,
-        origin: currentLoadObj.origin || currentLoadObj.pickupAddress || 'Unknown Origin',
-        destination: currentLoadObj.destination || currentLoadObj.deliveryAddress || 'Unknown Destination',
+        origin: origin || 'Pickup Origin',
+        destination: destination || 'Delivery Destination',
         pickupStop: {
-          name: currentLoadObj.pickupLocation || currentLoadObj.origin || 'Pickup Location',
-          address: currentLoadObj.pickupAddress || 'No Address Provided',
+          name: pickupContact,
+          address: pickupAddr,
           time: currentLoadObj.pickupTime || '08:00 AM'
         },
         deliveryStop: {
-          name: currentLoadObj.deliveryLocation || currentLoadObj.destination || 'Delivery Location',
-          address: currentLoadObj.deliveryAddress || 'No Address Provided',
+          name: deliveryContact,
+          address: deliveryAddr,
           time: currentLoadObj.deliveryTime || '02:30 PM'
         },
         loadType: currentLoadObj.type || currentLoadObj.loadType || currentLoadObj.category || 'General Freight',

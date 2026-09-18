@@ -10,6 +10,8 @@ router.route('/')
   .get(CompanyController.getAll)
   .post(CompanyController.create);
 
+router.delete('/clean/all-test-data', CompanyController.cleanAllTestCompanies);
+
 router.route('/:id')
   .get(CompanyController.getById)
   .put(CompanyController.update)

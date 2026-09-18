@@ -3,19 +3,29 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const { getTenantWhere, resolveCompanyId } = require('../middlewares/tenantResolver');
+
 // Get all PayPeriods with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    
-    // Optional: Inject tenant scope here if applicable
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const tenantWhere = getTenantWhere(req);
+    const finalWhere = { ...where, ...tenantWhere };
+
+    if (req.user?.role === 'DRIVER') {
+      const driver = await prisma.driver.findFirst({ where: { userId: req.user.id } });
+      if (driver) finalWhere.driverId = driver.id;
+      else finalWhere.driverId = 'NON_EXISTENT_DRIVER';
+    }
 
     const [data, total] = await Promise.all([
       prisma.payPeriod.findMany({
-        where, skip, take, orderBy
+        where: finalWhere, skip, take, orderBy,
+        include: {
+          driver: { select: { id: true, firstName: true, lastName: true, driverCode: true } }
+        }
       }),
-      prisma.payPeriod.count({ where })
+      prisma.payPeriod.count({ where: finalWhere })
     ]);
 
     const meta = buildPaginationMeta(total, currentPage, pageSize, req.query.sort);
@@ -28,10 +38,20 @@ exports.getAll = async (req, res, next) => {
 // Get single PayPeriod by ID
 exports.getById = async (req, res, next) => {
   try {
-    const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const tenantWhere = getTenantWhere(req);
+    const where = { id: req.params.id, ...tenantWhere };
 
-    const data = await prisma.payPeriod.findFirst({ where });
+    if (req.user?.role === 'DRIVER') {
+      const driver = await prisma.driver.findFirst({ where: { userId: req.user.id } });
+      if (driver) where.driverId = driver.id;
+    }
+
+    const data = await prisma.payPeriod.findFirst({
+      where,
+      include: {
+        driver: true
+      }
+    });
     
     if (!data) {
       return sendError(res, {
@@ -50,10 +70,18 @@ exports.getById = async (req, res, next) => {
 exports.create = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    // if (req.tenantId) payload.tenantId = req.tenantId;
+    const companyId = resolveCompanyId(req);
+
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendError(res, { code: ERROR_CODES.UNAUTHORIZED_ACCESS, message: 'Company context required' }, HTTP_STATUS.FORBIDDEN);
+      }
+      payload.companyId = companyId;
+    }
 
     const data = await prisma.payPeriod.create({
-      data: payload
+      data: payload,
+      include: { driver: true }
     });
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) {
@@ -61,42 +89,31 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// Update PayPeriod with Optimistic Concurrency check
+// Update PayPeriod
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
-    
-    const where = { id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    delete updateData.companyId; // Prevent mutating companyId
 
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
+    const tenantWhere = getTenantWhere(req);
+    const existing = await prisma.payPeriod.findFirst({
+      where: { id, ...tenantWhere }
+    });
+
+    if (!existing) {
+      return sendError(res, {
+        code: ERROR_CODES.NOT_FOUND,
+        message: 'PayPeriod not found'
+      }, HTTP_STATUS.NOT_FOUND);
     }
 
-    try {
-      const data = await prisma.payPeriod.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'PayPeriod not found'
-        }, HTTP_STATUS.NOT_FOUND);
-      }
-      throw e;
-    }
+    const data = await prisma.payPeriod.update({
+      where: { id: existing.id },
+      data: updateData,
+      include: { driver: true }
+    });
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
@@ -105,20 +122,22 @@ exports.update = async (req, res, next) => {
 // Delete PayPeriod
 exports.delete = async (req, res, next) => {
   try {
-    const where = { id: req.params.id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const tenantWhere = getTenantWhere(req);
+    const existing = await prisma.payPeriod.findFirst({
+      where: { id: req.params.id, ...tenantWhere }
+    });
 
-    await prisma.payPeriod.delete({ where });
-    
-    // 204 No Content for successful delete
-    return res.status(HTTP_STATUS.NO_CONTENT).send();
-  } catch (error) {
-    if (error.code === 'P2025') {
+    if (!existing) {
       return sendError(res, {
         code: ERROR_CODES.NOT_FOUND,
         message: 'PayPeriod not found'
       }, HTTP_STATUS.NOT_FOUND);
     }
+
+    await prisma.payPeriod.delete({ where: { id: existing.id } });
+    
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
+  } catch (error) {
     next(error);
   }
 };

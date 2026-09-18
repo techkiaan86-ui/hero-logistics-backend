@@ -39,7 +39,7 @@ exports.verifyToken = async (req, res, next) => {
       });
       if (dbUser) {
         req.user.companyId = dbUser.companyId || req.user.companyId || null;
-        req.user.tenantId = dbUser.companyId || req.user.tenantId || req.user.companyId || null;
+        req.user.tenantId = dbUser.companyId || req.user.tenantId || null;
         req.user.branchId = dbUser.branchId || null;
         req.user.role = dbUser.role || req.user.role;
         req.user.permissions = dbUser.customRole?.permissions?.map(p => p.actionString) || [];
@@ -48,16 +48,20 @@ exports.verifyToken = async (req, res, next) => {
       console.warn('Auth middleware dbUser lookup warning:', userDbErr?.message || userDbErr);
     }
 
+    req.tenantId = req.user?.companyId || req.user?.tenantId || null;
+    req.companyId = req.tenantId;
+
     next();
   } catch (error) {
     if (process.env.NODE_ENV !== 'production') {
       const decoded = jwt.decode(token);
       if (decoded) {
-        req.user = decoded;
+        const userId = decoded.userId || decoded.id;
+        req.user = { ...decoded, id: userId, userId };
         try {
           const prisma = require('../utils/prismaClient');
           const dbUser = await prisma.user.findUnique({
-            where: { id: decoded.userId || decoded.id },
+            where: { id: userId },
             include: {
               customRole: {
                 include: {
@@ -68,7 +72,7 @@ exports.verifyToken = async (req, res, next) => {
           });
           if (dbUser) {
             req.user.companyId = dbUser.companyId || req.user.companyId || null;
-            req.user.tenantId = dbUser.companyId || req.user.tenantId || req.user.companyId || null;
+            req.user.tenantId = dbUser.companyId || req.user.tenantId || null;
             req.user.branchId = dbUser.branchId || null;
             req.user.role = dbUser.role || req.user.role;
             req.user.permissions = dbUser.customRole?.permissions?.map(p => p.actionString) || [];
@@ -76,9 +80,8 @@ exports.verifyToken = async (req, res, next) => {
         } catch (fallbackDbErr) {
           console.warn('Auth middleware fallback lookup warning:', fallbackDbErr?.message || fallbackDbErr);
         }
-        return next();
-      } else {
-        req.user = { id: 'dev-user-id', role: 'COMPANY_ADMIN', permissions: [] };
+        req.tenantId = req.user?.companyId || req.user?.tenantId || null;
+        req.companyId = req.tenantId;
         return next();
       }
     }

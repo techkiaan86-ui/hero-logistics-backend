@@ -245,12 +245,26 @@ exports.create = async (req, res, next) => {
       payload.items = { create: itemsData };
     }
 
+    const agreedRate = payload.rate || payload.price || payload.revenue || payload.customerRate || null;
+    const agreedDriverPay = payload.driverPay || payload.driverRate || null;
+
+    let metaNotes = payload.notes || '';
+    if (agreedRate) metaNotes += ` [AGREED_RATE:${agreedRate}]`;
+    if (agreedDriverPay) metaNotes += ` [DRIVER_PAY:${agreedDriverPay}]`;
+    if (metaNotes.trim()) payload.notes = metaNotes.trim();
+
     delete payload.pickupLocation;
     delete payload.deliveryLocation;
     delete payload.driver;
     delete payload.truck;
     delete payload.customer;
     delete payload.trailer;
+    delete payload.rate;
+    delete payload.price;
+    delete payload.revenue;
+    delete payload.customerRate;
+    delete payload.driverPay;
+    delete payload.driverRate;
 
     const data = await prisma.load.create({
       data: payload,
@@ -262,6 +276,16 @@ exports.create = async (req, res, next) => {
         items: true
       }
     });
+
+    if (agreedRate && data.id) {
+      try {
+        const { autoGenerateLoadInvoice } = require('./CompanyAdminPortalController');
+        if (typeof autoGenerateLoadInvoice === 'function') {
+          await autoGenerateLoadInvoice(data.id, data.companyId, agreedRate);
+        }
+      } catch (e) {}
+    }
+
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) {
     next(error);
@@ -316,6 +340,21 @@ exports.update = async (req, res, next) => {
       where: { id: targetLoad.id },
       data: updateData
     });
+
+    if (updateData.status === 'DELIVERED') {
+      try {
+        const { autoGenerateLoadInvoice, autoCreditDriverPayroll } = require('./CompanyAdminPortalController');
+        if (typeof autoGenerateLoadInvoice === 'function') {
+          await autoGenerateLoadInvoice(data.id, data.companyId);
+        }
+        if (typeof autoCreditDriverPayroll === 'function' && data.driverId) {
+          await autoCreditDriverPayroll(data.id, data.driverId, data.companyId);
+        }
+      } catch (finErr) {
+        console.warn('Auto finance trigger on LoadController.update catch:', finErr?.message);
+      }
+    }
+
     return sendSuccess(res, data);
   } catch (error) {
     next(error);
@@ -421,6 +460,21 @@ exports.updateStatus = async (req, res, next) => {
     }
 
     const data = await LoadService.updateStatus(id, status, reason, companyId);
+
+    if (status === 'DELIVERED' || status === 'COMPLETED') {
+      try {
+        const { autoGenerateLoadInvoice, autoCreditDriverPayroll } = require('./CompanyAdminPortalController');
+        if (typeof autoGenerateLoadInvoice === 'function') {
+          await autoGenerateLoadInvoice(data.id, data.companyId);
+        }
+        if (typeof autoCreditDriverPayroll === 'function' && data.driverId) {
+          await autoCreditDriverPayroll(data.id, data.driverId, data.companyId);
+        }
+      } catch (finErr) {
+        console.warn('Auto finance trigger on LoadController.updateStatus catch:', finErr?.message);
+      }
+    }
+
     return sendSuccess(res, data, HTTP_STATUS.OK);
   } catch (error) {
     next(error);

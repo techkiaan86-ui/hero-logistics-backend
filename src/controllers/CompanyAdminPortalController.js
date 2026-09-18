@@ -191,6 +191,15 @@ exports.createLoad = async (req, res, next) => {
     }
     delete payload.vehicleId;
 
+    // Extract and preserve financial metadata
+    const agreedRate = payload.rate || payload.price || payload.revenue || payload.customerRate || null;
+    const agreedDriverPay = payload.driverPay || payload.driverRate || null;
+
+    let metaNotes = payload.notes || '';
+    if (agreedRate) metaNotes += ` [AGREED_RATE:${agreedRate}]`;
+    if (agreedDriverPay) metaNotes += ` [DRIVER_PAY:${agreedDriverPay}]`;
+    if (metaNotes.trim()) payload.notes = metaNotes.trim();
+
     // Clean non-schema parameters
     delete payload.customerName;
     delete payload.driverName;
@@ -211,32 +220,53 @@ exports.createLoad = async (req, res, next) => {
     delete payload.revenue;
     delete payload.distance;
     delete payload.pickupStopId;
+    delete payload.driverPay;
+    delete payload.driverRate;
+    delete payload.customerRate;
+
+    // Remove empty/invalid relation IDs to prevent foreign key errors
+    if (!payload.customerId) delete payload.customerId;
+    if (!payload.driverId) delete payload.driverId;
+    if (!payload.truckId) delete payload.truckId;
+    if (!payload.trailerId) delete payload.trailerId;
+    if (!payload.branchId) delete payload.branchId;
+
+    if (payload.documents && (!payload.documents.create || payload.documents.create.length === 0)) {
+      delete payload.documents;
+    }
 
     if (Array.isArray(stops) && stops.length > 0) {
       payload.stops = {
-        create: stops.map((s, idx) => ({
-          type: s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF'),
-          sequenceIndex: s.sequenceIndex ?? idx,
-          address: s.address || 'Location Stop',
-          contactName: s.contactName || null,
-          contactPhone: s.contactPhone || null,
-          scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : null
-        }))
+        create: stops.map((s, idx) => {
+          let sType = (s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF')).toUpperCase();
+          if (sType.includes('PICK')) sType = 'PICKUP';
+          else sType = 'DROPOFF';
+          return {
+            type: sType,
+            sequenceIndex: s.sequenceIndex ?? idx,
+            address: s.address || 'Location Stop',
+            contactName: s.contactName || null,
+            contactPhone: s.contactPhone || null,
+            scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : null
+          };
+        })
       };
     }
 
     if (Array.isArray(items) && items.length > 0) {
       payload.items = {
         create: items.map(item => ({
-          stockRef: item.stockRef || item.rego || item.description || 'ITEM-REF',
-          description: item.description || item.type || 'Freight Item',
+          stockRef: item.stockRef || item.stockRec || item.rego || item.rcog || item.vin || item.description || 'ITEM-REF',
+          description: item.description || item.itemDescription || item.type || 'Freight Item',
           category: item.type || item.category || 'General Freight',
           make: item.make || null,
           model: item.model || null,
-          rego: item.rego || null,
+          rego: item.rego || item.rcog || null,
           vin: item.vin || null,
-          quantity: item.quantity || 1,
-          weightKg: item.weightValue || (item.weight ? parseInt(String(item.weight).replace(/[^0-9]/g, '')) || 0 : 0),
+          year: item.year ? parseInt(String(item.year).replace(/[^0-9]/g, ''), 10) || null : null,
+          color: item.colour || item.color || null,
+          quantity: item.quantity ? parseInt(String(item.quantity).replace(/[^0-9]/g, ''), 10) || 1 : 1,
+          weightKg: item.weightValue || (item.weight ? parseInt(String(item.weight).replace(/[^0-9]/g, ''), 10) || 0 : 0),
           notes: typeof item.notes === 'string' ? item.notes : (item.details || JSON.stringify(item))
         }))
       };
@@ -246,6 +276,14 @@ exports.createLoad = async (req, res, next) => {
       data: payload,
       include: { driver: true, truck: true, customer: true, stops: true, items: true }
     });
+
+    // If agreed customer rate provided at load creation, pre-create Draft CustomerInvoice
+    if (agreedRate && data.id) {
+      try {
+        await exports.autoGenerateLoadInvoice(data.id, data.companyId, agreedRate);
+      } catch (e) {}
+    }
+
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
   } catch (error) { next(error); }
 };
@@ -268,6 +306,19 @@ exports.updateLoad = async (req, res, next) => {
       data: payload,
       include: { driver: true, truck: true, trailer: true, customer: true, stops: true, items: true }
     });
+
+    // P0 requirement: When transitioned to DELIVERED, automatically credit driver payroll and generate draft invoice
+    if (payload.status === 'DELIVERED') {
+      try {
+        await exports.autoGenerateLoadInvoice(data.id, data.companyId);
+        if (data.driverId) {
+          await exports.autoCreditDriverPayroll(data.id, data.driverId, data.companyId);
+        }
+      } catch (finErr) {
+        console.warn('Auto finance trigger on updateLoad catch:', finErr?.message);
+      }
+    }
+
     return sendSuccess(res, data);
   } catch (error) { next(error); }
 };
@@ -378,6 +429,12 @@ exports.autoGenerateLoadInvoice = async (loadId, companyId, customAmount = null)
     // 4. Rate / Amount Calculation
     let amount = customAmount ? parseFloat(customAmount) : 0;
     if (!amount || amount === 0) {
+      if (targetLoad.notes && targetLoad.notes.includes('[AGREED_RATE:')) {
+        const match = targetLoad.notes.match(/\[AGREED_RATE:([0-9.]+)/);
+        if (match && match[1]) amount = parseFloat(match[1]);
+      }
+    }
+    if (!amount || amount === 0) {
       const itemsCount = targetLoad.items?.length || 1;
       amount = itemsCount * 350.00;
       if (amount < 500) amount = 1250.00;
@@ -438,6 +495,12 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
 
     // 3. Determine Trip Pay Credit Amount
     let tripCredit = customCredit ? parseFloat(customCredit) : 0;
+    if (!tripCredit || tripCredit === 0) {
+      if (load.notes && load.notes.includes('[DRIVER_PAY:')) {
+        const match = load.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+        if (match && match[1]) tripCredit = parseFloat(match[1]);
+      }
+    }
     if (!tripCredit || tripCredit === 0) {
       if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
         tripCredit = parseFloat(driver.payRate);
@@ -1968,8 +2031,7 @@ exports.createPayrollRun = async (req, res, next) => {
       return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'periodStart and periodEnd are required' }, HTTP_STATUS.BAD_REQUEST);
     }
 
-    // â”€â”€ 3-tier driver lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // Tier 1: company-scoped drivers with optional branch/id filters
+    // Only company-scoped drivers
     let whereDrivers = { companyId };
     if (branchId) whereDrivers.branchId = branchId;
     if (driverIds && Array.isArray(driverIds) && driverIds.length > 0) {
@@ -1977,21 +2039,8 @@ exports.createPayrollRun = async (req, res, next) => {
     }
     let drivers = await prisma.driver.findMany({ where: whereDrivers, select: { id: true } });
 
-    // Tier 2: no company-scoped drivers â†’ try without companyId
-    // (drivers created without companyId in dev/seed scenarios)
     if (drivers.length === 0) {
-      const fallbackWhere = {};
-      if (branchId) fallbackWhere.branchId = branchId;
-      if (driverIds && Array.isArray(driverIds) && driverIds.length > 0) {
-        fallbackWhere.id = { in: driverIds };
-      }
-      drivers = await prisma.driver.findMany({ where: fallbackWhere, select: { id: true }, take: 100 });
-    }
-
-    // Tier 3: NO drivers anywhere in DB â†’ auto-seed 6 demo drivers for this company
-    // so the payroll run always succeeds (handles fresh installs / empty DBs)
-    if (drivers.length === 0) {
-      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'No drivers found to process payroll run.' }, HTTP_STATUS.BAD_REQUEST);
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'No drivers found for this company to process payroll run.' }, HTTP_STATUS.BAD_REQUEST);
     }
 
     const basePayAmount = parseFloat(basePay) || 1000;
@@ -2163,8 +2212,13 @@ exports.updatePayrollRunStatus = async (req, res, next) => {
 exports.getFinance = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
-    const invoiceWhere = companyId ? { customer: { companyId } } : {};
-    const billingWhere = companyId ? { companyId } : {};
+    const invoiceWhere = companyId ? {
+      OR: [
+        { customer: { companyId } },
+        { load: { companyId } }
+      ]
+    } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
+    const billingWhere = companyId ? { companyId } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
     const { status, search, page = '1', limit = '20' } = req.query;
 
     const filterWhere = { ...invoiceWhere };

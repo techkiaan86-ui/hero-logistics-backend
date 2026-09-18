@@ -3,26 +3,40 @@ const { sendSuccess, sendList, sendError } = require('../utils/apiResponse');
 const { buildPrismaQuery, buildPaginationMeta } = require('../utils/queryBuilder');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
+
+const getExpenseTenantWhere = (req) => {
+  const companyId = resolveCompanyId(req);
+  if (companyId) {
+    return {
+      OR: [
+        { companyId },
+        { load: { companyId } }
+      ]
+    };
+  }
+  if (req.user && req.user.role === 'SUPER_ADMIN') {
+    return {};
+  }
+  return { id: 'IMPOSSIBLE_EXPENSE_ID_NO_ACCESS' };
+};
+
 // Get all LoadExpenses with pagination, sorting and filtering
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
-    
-    if (req.tenantId) {
-      where.OR = [
-        { companyId: req.tenantId },
-        { load: { companyId: req.tenantId } }
-      ];
-    }
+    const tenantWhere = getExpenseTenantWhere(req);
+    const finalWhere = { ...where, ...tenantWhere };
+
     if (req.user && req.user.role === 'DRIVER') {
-      where.load = { driver: { userId: req.user.id } };
+      finalWhere.load = { driver: { userId: req.user.id } };
     }
 
     const [data, total] = await Promise.all([
       prisma.loadExpense.findMany({
-        where, skip, take, orderBy
+        where: finalWhere, skip, take, orderBy
       }),
-      prisma.loadExpense.count({ where })
+      prisma.loadExpense.count({ where: finalWhere })
     ]);
 
     const meta = buildPaginationMeta(total, currentPage, pageSize, req.query.sort);
@@ -35,13 +49,9 @@ exports.getAll = async (req, res, next) => {
 // Get single LoadExpense by ID
 exports.getById = async (req, res, next) => {
   try {
-    const where = { id: req.params.id };
-    if (req.tenantId) {
-      where.OR = [
-        { companyId: req.tenantId },
-        { load: { companyId: req.tenantId } }
-      ];
-    }
+    const tenantWhere = getExpenseTenantWhere(req);
+    const where = { id: req.params.id, ...tenantWhere };
+
     if (req.user && req.user.role === 'DRIVER') {
       where.load = { driver: { userId: req.user.id } };
     }
