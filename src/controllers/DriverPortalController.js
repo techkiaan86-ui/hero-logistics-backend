@@ -220,13 +220,13 @@ exports.getDashboard = async (req, res, next) => {
     const pType = (driver.payType || 'Hourly').toLowerCase();
     let rawGross = 0;
     if (pType.includes('load')) {
-      const loadCnt = completedLoads.length || (activeLoads.length > 0 ? activeLoads.length : 1);
+      const loadCnt = completedLoads.length || (activeLoads.length > 0 ? activeLoads.length : 0);
       rawGross = loadCnt * (baseRate > 0 ? baseRate : 250);
     } else if (pType.includes('km')) {
-      const dist = (completedLoads.length || 1) * 650;
+      const dist = completedLoads.length * 650 + (activeLoads.length > 0 ? activeLoads.length * 250 : 0);
       rawGross = dist * (baseRate > 0 ? baseRate : 0.85);
     } else {
-      const hrs = driveMinutes > 0 ? (driveMinutes / 60) : (completedLoads.length > 0 ? completedLoads.length * 8 : 8);
+      const hrs = driveMinutes > 0 ? (driveMinutes / 60) : (completedLoads.length > 0 ? completedLoads.length * 8 : (activeLoads.length > 0 ? activeLoads.length * 4 : 0));
       rawGross = hrs * (baseRate > 0 ? baseRate : 35);
     }
     const calculatedPay = Math.round(rawGross * 0.85 * 100) / 100;

@@ -504,7 +504,16 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
     }
     if (!tripCredit || tripCredit === 0) {
       if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
-        tripCredit = parseFloat(driver.payRate);
+        const rate = parseFloat(driver.payRate);
+        const pType = (driver.payType || '').toLowerCase();
+        if (pType.includes('km') || pType.includes('kilometre')) {
+          const km = parseFloat(load.totalDistance || load.distance || 0) || 650;
+          tripCredit = Math.round(rate * km * 100) / 100;
+        } else if (pType.includes('hour')) {
+          tripCredit = Math.round(rate * 8 * 100) / 100;
+        } else {
+          tripCredit = rate;
+        }
       } else {
         tripCredit = 250.00;
       }
@@ -550,24 +559,30 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
 
     if (!payPeriod) return null;
 
-    // 5. Update Load Allowance & Recalculate Earnings using official project formulas
-    const newLoadAllowance = (payPeriod.loadAllowance || 0) + tripCredit;
-    const basePay = payPeriod.basePay || 0;
-    const distanceAllow = payPeriod.distanceAllow || 0;
+    // 5. Update Earnings & Recalculate according to Driver PayType
+    const pType = (driver.payType || '').toLowerCase();
+    const isKm = pType.includes('km') || pType.includes('kilometre');
+    const isHourly = pType.includes('hour');
+
+    const newLoadAllowance = isKm || isHourly ? (payPeriod.loadAllowance || 0) : ((payPeriod.loadAllowance || 0) + tripCredit);
+    const newDistanceAllow = isKm ? ((payPeriod.distanceAllow || 0) + tripCredit) : (payPeriod.distanceAllow || 0);
+    const newBasePay = isHourly ? ((payPeriod.basePay || 0) + tripCredit) : (payPeriod.basePay || 0);
     const otherAllowance = payPeriod.otherAllowance || 0;
     const bonuses = payPeriod.bonuses || 0;
 
-    const grossEarnings = basePay + newLoadAllowance + distanceAllow + otherAllowance + bonuses;
-    const paygTax = grossEarnings * 0.20;
-    const superAmount = grossEarnings * 0.11; // 11% Superannuation Guarantee (Employer Contribution Liability)
-    const totalDeductions = paygTax + (payPeriod.unionFees || 0) + (payPeriod.otherDeductions || 0);
-    const netPay = grossEarnings - totalDeductions;
+    const grossEarnings = Math.round((newBasePay + newLoadAllowance + newDistanceAllow + otherAllowance + bonuses) * 100) / 100;
+    const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
+    const superAmount = Math.round(grossEarnings * 0.11 * 100) / 100;
+    const totalDeductions = Math.round((paygTax + superAmount) * 100) / 100;
+    const netPay = Math.round((grossEarnings - totalDeductions) * 100) / 100;
 
     // 6. Save Updated PayPeriod
     const updatedPayPeriod = await prisma.payPeriod.update({
       where: { id: payPeriod.id },
       data: {
         loadAllowance: newLoadAllowance,
+        distanceAllow: newDistanceAllow,
+        basePay: newBasePay,
         grossEarnings,
         paygTax,
         superAmount,
