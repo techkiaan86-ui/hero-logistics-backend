@@ -989,7 +989,7 @@ exports.createDriver = async (req, res, next) => {
         const cleanDrvEmail = driverData.email.toLowerCase().trim();
         let linkedUser = await prisma.user.findFirst({ where: { email: cleanDrvEmail } });
         if (!linkedUser) {
-          const rawPass = payload.password || payload.Password || 'Driver@1234';
+          const rawPass = payload.password || payload.Password || '123456';
           const passHash = await bcrypt.hash(rawPass, 10);
           linkedUser = await prisma.user.create({
             data: {
