@@ -6,6 +6,13 @@ const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
+    if (companyId) {
+      where.driver = { companyId };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      where.driver = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+    }
     if (req.query.driverId) where.driverId = req.query.driverId;
     if (req.query.category && req.query.category !== 'All Activities') where.category = req.query.category;
     const [data, total] = await Promise.all([
@@ -18,7 +25,16 @@ exports.getAll = async (req, res, next) => {
 
 exports.getById = async (req, res, next) => {
   try {
-    const data = await prisma.driverActivity.findFirst({ where: { id: req.params.id } });
+    
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
+    const where = { id: req.params.id };
+    if (companyId) {
+      where.driver = { companyId };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      where.driver = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+    }
+    const data = await prisma.DriverActivity.findFirst({ where });
     if (!data) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Activity record not found' }, HTTP_STATUS.NOT_FOUND);
     return sendSuccess(res, data);
   } catch (error) { next(error); }
@@ -47,7 +63,15 @@ exports.create = async (req, res, next) => {
 exports.update = async (req, res, next) => {
   try {
     try {
-      const data = await prisma.driverActivity.update({ where: { id: req.params.id }, data: req.body });
+      
+    const companyId = resolveCompanyId(req);
+    const where = { id: req.params.id };
+    if (companyId) {
+      where.driver = { companyId };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      where.driver = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+    }
+    const data = await prisma.driverActivity.update({ where, data: req.body });
       return sendSuccess(res, data);
     } catch (e) {
       if (e.code === 'P2025') return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Activity record not found' }, HTTP_STATUS.NOT_FOUND);
@@ -58,7 +82,15 @@ exports.update = async (req, res, next) => {
 
 exports.delete = async (req, res, next) => {
   try {
-    await prisma.driverActivity.delete({ where: { id: req.params.id } });
+    
+    const companyId = resolveCompanyId(req);
+    const where = { id: req.params.id };
+    if (companyId) {
+      where.driver = { companyId };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      where.driver = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+    }
+    await prisma.driverActivity.delete({ where });
     return res.status(HTTP_STATUS.NO_CONTENT).send();
   } catch (error) {
     if (error.code === 'P2025') return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Activity record not found' }, HTTP_STATUS.NOT_FOUND);

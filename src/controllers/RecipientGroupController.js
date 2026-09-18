@@ -47,7 +47,13 @@ const RecipientGroupController = {
         });
       }
 
-      let companyId = req.user?.companyId || req.body.companyId || req.headers['x-company-id'];
+      
+      const { resolveCompanyId } = require('../middlewares/tenantResolver');
+      let companyId = resolveCompanyId(req);
+      if (req.user?.role === 'SUPER_ADMIN' && req.body.companyId) {
+        companyId = req.body.companyId;
+      }
+    
 
       if (!companyId) {
         const firstCompany = await prisma.company.findFirst({ select: { id: true } });

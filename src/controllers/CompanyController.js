@@ -8,8 +8,18 @@ exports.getAll = async (req, res, next) => {
   try {
     const { where, skip, take, orderBy, currentPage, pageSize } = buildPrismaQuery(req.query);
     
-    // Optional: Inject tenant scope here if applicable
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    // Enforce tenant scoping
+    const { resolveCompanyId } = require('../middlewares/tenantResolver');
+    const companyId = resolveCompanyId(req);
+    
+    if (req.user?.role !== 'SUPER_ADMIN') {
+      if (!companyId) {
+        return sendList(res, [], buildPaginationMeta(0, currentPage, pageSize, req.query.sort));
+      }
+      where.id = companyId;
+    } else if (req.query.companyId) {
+      where.id = req.query.companyId;
+    }
 
     const [data, total] = await Promise.all([
       prisma.company.findMany({

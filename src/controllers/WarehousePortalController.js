@@ -14,9 +14,14 @@ const checkManagerAccess = (req) => {
 // 1. WAREHOUSE DASHBOARD & OVERVIEW
 // ============================================================================
 
+const { resolveCompanyId } = require('../middlewares/tenantResolver');
+
 exports.getDashboard = async (req, res, next) => {
   try {
-    const tenantId = req.tenantId;
+    const tenantId = resolveCompanyId(req);
+    if (!tenantId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, { overview: {}, inboundToday: [], loadLanesOverview: [], recentMovements: [], tasks: [], shift: {}, notifications: [], yardCapacity: {} });
+    }
     const userId = req.user?.userId || req.user?.id;
 
     // Parallel fetch of ALL dashboard data in ONE query
@@ -259,9 +264,11 @@ exports.getNotifications = async (req, res, next) => {
 // Single dedicated endpoint for Find Stock menu
 exports.getFindStockPortal = async (req, res, next) => {
   try {
-    const tenantId = req.tenantId;
-
-    const companyId = tenantId || req.user?.companyId || req.user?.tenantId;
+    const tenantId = resolveCompanyId(req);
+    if (!tenantId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, { stock: [], loadLanes: [], holdingAreas: [], stats: {} });
+    }
+    const companyId = tenantId;
 
     let dbItems = await prisma.loadItem.findMany({
       ...(companyId && { where: { OR: [{ warehouse: { branch: { companyId } } }, { load: { companyId } }] } }),
@@ -381,7 +388,10 @@ exports.getFindStockPortal = async (req, res, next) => {
 // Unified endpoint for Yard Locations page. Returns stock, load lanes, and holding areas.
 exports.getYardLocations = async (req, res, next) => {
   try {
-    const tenantId = req.tenantId;
+    const tenantId = resolveCompanyId(req);
+    if (!tenantId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendSuccess(res, { stock: [], loadLanes: [], holdingAreas: [] });
+    }
     const [stockRes, lanesRes, holdingRes] = await Promise.all([
       // Stock items (similar to getStock but without query filters)
       prisma.loadItem.findMany({
@@ -434,9 +444,14 @@ exports.getStock = async (req, res, next) => {
       zone, row, bay, stagingArea, sort, page = 1, limit = 25
     } = req.query;
 
+    const tenantId = resolveCompanyId(req);
+    if (!tenantId && req.user?.role !== 'SUPER_ADMIN') {
+      return sendList(res, [], { total: 0, currentPage: parseInt(page), pageSize: parseInt(limit), totalPages: 0 });
+    }
+    
     const where = {};
-    if (req.tenantId) {
-      where.warehouse = { branch: { companyId: req.tenantId } };
+    if (tenantId) {
+      where.warehouse = { branch: { companyId: tenantId } };
     }
 
     if (search) {

@@ -59,7 +59,12 @@ exports.create = async (req, res, next) => {
     }
 
     const { resolveCompanyId } = require('../middlewares/tenantResolver');
-    let companyId = resolveCompanyId(req) || req.body.companyId;
+    
+      let companyId = resolveCompanyId(req);
+      if (req.user?.role === 'SUPER_ADMIN' && req.body.companyId) {
+        companyId = req.body.companyId;
+      }
+      
 
     let typeEnum = 'CUSTOM';
     if (integrationType) {

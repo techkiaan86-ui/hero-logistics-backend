@@ -42,8 +42,15 @@ const mapStatusToDb = (statusStr) => {
 exports.getDashboard = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
-    const scope = companyId ? { companyId } : {};
-    const invoiceScope = companyId ? { customer: { companyId } } : {};
+    let scope = {};
+    let invoiceScope = {};
+    if (companyId) {
+      scope = { companyId };
+      invoiceScope = { customer: { companyId } };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      scope = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+      invoiceScope = { customer: { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' } };
+    }
 
     // 1. Invoices
     const allInvoices = await prisma.customerInvoice.findMany({
@@ -162,7 +169,12 @@ exports.getInvoices = async (req, res, next) => {
     const companyId = await resolveCompanyId(req);
     const { status, type, search } = req.query;
 
-    const invoiceScope = companyId ? { customer: { companyId } } : {};
+    let invoiceScope = {};
+    if (companyId) {
+      invoiceScope = { customer: { companyId } };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      invoiceScope = { customer: { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' } };
+    }
     let where = { ...invoiceScope };
 
     if (status && status !== 'ALL') {
@@ -438,7 +450,12 @@ exports.deleteInvoice = async (req, res, next) => {
 exports.getPayments = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
-    const invoiceScope = companyId ? { customer: { companyId } } : {};
+    let invoiceScope = {};
+    if (companyId) {
+      invoiceScope = { customer: { companyId } };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      invoiceScope = { customer: { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' } };
+    }
 
     const paidInvoices = await prisma.customerInvoice.findMany({
       where: {
@@ -588,7 +605,12 @@ exports.refundPayment = async (req, res, next) => {
 exports.getPayrollRuns = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
-    const scope = companyId ? { companyId } : {};
+    let scope = {};
+    if (companyId) {
+      scope = { companyId };
+    } else if (req.user?.role !== 'SUPER_ADMIN') {
+      scope = { companyId: 'IMPOSSIBLE_TENANT_ID_NO_ACCESS' };
+    }
 
     const payPeriods = await prisma.payPeriod.findMany({
       where: scope,

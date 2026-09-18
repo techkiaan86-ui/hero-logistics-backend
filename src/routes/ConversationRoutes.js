@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const ConversationController = require('../controllers/ConversationController');
-// const auth = require('../middlewares/auth');
+const auth = require('../middlewares/auth');
 
 // Default open for testing, uncomment auth to protect routes
-// router.use(auth.verifyToken);
+router.use(auth.verifyToken);
 
 router.get('/depot', ConversationController.getDepotComms);
 
