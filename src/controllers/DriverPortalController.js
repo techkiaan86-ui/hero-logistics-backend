@@ -1433,11 +1433,15 @@ exports.addExpense = async (req, res, next) => {
       }
     }
 
+    const compId = driver.companyId || req.tenantId;
+
     const expense = await prisma.loadExpense.create({
       data: {
         loadId: activeLoadId,
+        companyId: compId,
+        driverId: driver.id,
         date: new Date(),
-        type: type || null,
+        type: type || 'Fuel',
         description: description || null,
         amount: parseFloat(amount) || 0,
         vendorName: vendorName || null,

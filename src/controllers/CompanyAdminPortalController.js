@@ -308,8 +308,8 @@ exports.updateLoad = async (req, res, next) => {
       include: { driver: true, truck: true, trailer: true, customer: true, stops: true, items: true }
     });
 
-    // P0 requirement: When transitioned to DELIVERED, automatically credit driver payroll and generate draft invoice
-    if (payload.status === 'DELIVERED') {
+    // P0 requirement: When transitioned to DELIVERED or COMPLETED, automatically credit driver payroll and generate draft invoice
+    if (payload.status === 'DELIVERED' || payload.status === 'COMPLETED') {
       try {
         await exports.autoGenerateLoadInvoice(data.id, data.companyId);
         if (data.driverId) {
@@ -416,11 +416,23 @@ exports.autoGenerateLoadInvoice = async (loadId, companyId, customAmount = null)
 
     // 3. Customer Resolution
     let customerId = targetLoad.customerId;
+    const targetCompanyId = companyId || targetLoad.companyId;
     if (!customerId) {
-      const targetCompanyId = companyId || targetLoad.companyId;
       let cust = await prisma.customer.findFirst({
         where: targetCompanyId ? { companyId: targetCompanyId } : {}
       }).catch(() => null);
+
+      if (!cust && targetCompanyId) {
+        const crypto = require('crypto');
+        cust = await prisma.customer.create({
+          data: {
+            id: crypto.randomUUID(),
+            companyId: targetCompanyId,
+            name: 'General Freight Customer',
+            email: 'accounts@generalcustomer.com.au'
+          }
+        }).catch(() => null);
+      }
 
       if (cust) customerId = cust.id;
     }
@@ -2283,6 +2295,15 @@ exports.getFinance = async (req, res, next) => {
       ]
     } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
     const billingWhere = companyId ? { companyId } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
+    const expenseWhere = companyId ? {
+      OR: [
+        { companyId },
+        { load: { companyId } },
+        { driver: { companyId } }
+      ]
+    } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
+    const payPeriodWhere = companyId ? { companyId } : (req.user?.role === 'SUPER_ADMIN' ? {} : { id: 'NO_ACCESS' });
+
     const { status, search, page = '1', limit = '20' } = req.query;
 
     const filterWhere = { ...invoiceWhere };
@@ -2298,7 +2319,7 @@ exports.getFinance = async (req, res, next) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const [invoices, billingRecords, total] = await Promise.all([
+    const [invoices, billingRecords, loadExpenses, payPeriods, total] = await Promise.all([
       prisma.customerInvoice.findMany({
         where: filterWhere,
         include: {
@@ -2310,6 +2331,24 @@ exports.getFinance = async (req, res, next) => {
         take: parseInt(limit)
       }),
       prisma.billingRecord.findMany({ where: billingWhere, orderBy: { createdAt: 'desc' }, take: 50 }),
+      prisma.loadExpense.findMany({
+        where: expenseWhere,
+        include: {
+          driver: { select: { id: true, firstName: true, lastName: true } },
+          load: { select: { id: true, loadRef: true } },
+          vehicle: { select: { id: true, rego: true } }
+        },
+        orderBy: { date: 'desc' },
+        take: 100
+      }).catch(() => []),
+      prisma.payPeriod.findMany({
+        where: payPeriodWhere,
+        include: {
+          driver: { select: { id: true, firstName: true, lastName: true, driverCode: true } }
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 100
+      }).catch(() => []),
       prisma.customerInvoice.count({ where: filterWhere }),
     ]);
 
@@ -2320,24 +2359,40 @@ exports.getFinance = async (req, res, next) => {
     });
     const paidTotal      = allInvoices.filter(i => i.status === 'PAID').reduce((s, i) => s + (i.amount || 0), 0);
     const sentTotal      = allInvoices.filter(i => i.status === 'SENT').reduce((s, i) => s + (i.amount || 0), 0);
+    const draftTotal     = allInvoices.filter(i => i.status === 'DRAFT').reduce((s, i) => s + (i.amount || 0), 0);
     const overdueTotal   = allInvoices.filter(i => i.status === 'OVERDUE').reduce((s, i) => s + (i.amount || 0), 0);
-    const totalExpenses  = billingRecords.reduce((s, b) => s + (b.amount || 0), 0);
-    const netProfit      = paidTotal - totalExpenses;
+
+    // Calculate all expenses (Billing + Fuel + Load Expenses + Driver Payroll)
+    const billingTotal        = billingRecords.reduce((s, b) => s + (b.amount || 0), 0);
+    const fuelExpensesTotal   = loadExpenses.filter(e => (e.type || '').toUpperCase() === 'FUEL').reduce((s, e) => s + (e.amount || 0), 0);
+    const otherExpensesTotal  = loadExpenses.filter(e => (e.type || '').toUpperCase() !== 'FUEL').reduce((s, e) => s + (e.amount || 0), 0);
+    const driverPayrollTotal  = payPeriods.reduce((s, p) => s + (p.grossEarnings || p.netPay || 0), 0);
+
+    const totalExpenses  = Math.round((billingTotal + fuelExpensesTotal + otherExpensesTotal + driverPayrollTotal) * 100) / 100;
+    const netProfit      = Math.round((paidTotal - totalExpenses) * 100) / 100;
 
     return sendSuccess(res, {
       stats: {
         totalRevenue: paidTotal,
         totalExpenses,
         netProfit,
-        totalOutstanding: sentTotal,
+        totalOutstanding: sentTotal + draftTotal,
         totalOverdue: overdueTotal,
         totalInvoices: total,
         paidCount:        allInvoices.filter(i => i.status === 'PAID').length,
         overdueCount:     allInvoices.filter(i => i.status === 'OVERDUE').length,
-        outstandingCount: allInvoices.filter(i => i.status === 'SENT').length,
+        outstandingCount: allInvoices.filter(i => i.status === 'SENT' || i.status === 'DRAFT').length,
+        breakdown: {
+          billingTotal,
+          fuelExpensesTotal,
+          otherExpensesTotal,
+          driverPayrollTotal
+        }
       },
       invoices,
       billingRecords,
+      loadExpenses,
+      payrollRuns: payPeriods,
       pagination: { total, page: parseInt(page), limit: parseInt(limit), pages: Math.ceil(total / parseInt(limit)) }
     });
   } catch (error) { next(error); }
@@ -3880,6 +3935,7 @@ exports.createLoadExpense = async (req, res, next) => {
       data: {
         id: crypto.randomUUID(),
         loadId: targetLoad.id,
+        companyId: targetLoad.companyId || companyId,
         type: type || 'Other',
         description: desc || description || 'New Expense',
         amount: parsedAmount,
