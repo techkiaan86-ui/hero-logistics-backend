@@ -914,7 +914,27 @@ exports.createDriver = async (req, res, next) => {
   try {
     const companyId = await resolveCompanyId(req);
     const payload = { ...req.body };
-    const effectiveCompanyId = companyId || payload.companyId;
+    let effectiveCompanyId = companyId || payload.companyId;
+    if (!effectiveCompanyId) {
+      let defaultComp = await prisma.company.findFirst().catch(() => null);
+      if (!defaultComp) {
+        defaultComp = await prisma.company.create({
+          data: {
+            name: 'Hero Logistics Pty Ltd',
+            tenantId: 'HERO-DEMO-01'
+          }
+        }).catch(() => null);
+      }
+      if (defaultComp) {
+        effectiveCompanyId = defaultComp.id;
+        if (req.user?.id && !req.user.companyId) {
+          await prisma.user.update({
+            where: { id: req.user.id },
+            data: { companyId: defaultComp.id }
+          }).catch(() => null);
+        }
+      }
+    }
 
     let validStatus = 'AVAILABLE';
     if (payload.status) {
