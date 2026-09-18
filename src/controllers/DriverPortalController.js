@@ -1731,8 +1731,14 @@ exports.getDriverDocuments = async (req, res, next) => {
 
     const activeLoad = activeLoads.find(l => ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'].includes(l.status)) || activeLoads[0] || null;
     const loadRef = activeLoad ? (activeLoad.loadNumber || activeLoad.loadRef || `LD-${activeLoad.id.slice(0, 4).toUpperCase()}`) : '';
-    const origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
-    const destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    let origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
+    let destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    if (activeLoad?.stops && activeLoad.stops.length > 0) {
+      const pStop = activeLoad.stops.find(s => s.type === 'PICKUP') || activeLoad.stops[0];
+      const dStop = activeLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || activeLoad.stops[activeLoad.stops.length - 1];
+      if (pStop && (!origin || origin === '')) origin = pStop.address || pStop.name || '';
+      if (dStop && (!destination || destination === '')) destination = dStop.address || dStop.name || '';
+    }
     const truckRego = assignedVehicle?.rego || assignedVehicle?.plate || activeLoad?.truck?.rego || 'Unassigned';
     const trailerType = activeLoad?.type || activeLoad?.loadType || '';
 
@@ -1950,7 +1956,7 @@ exports.getTimesheets = async (req, res, next) => {
       }).catch(() => []) : [],
       prisma.load.findMany({
         where: { driverId },
-        include: { truck: true, items: true },
+        include: { truck: true, items: true, stops: true },
         orderBy: { createdAt: 'desc' },
         take: 3
       }).catch(() => [])
@@ -1958,8 +1964,14 @@ exports.getTimesheets = async (req, res, next) => {
 
     const activeLoad = activeLoads.find(l => ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'].includes(l.status)) || activeLoads[0] || null;
     const loadRef = activeLoad ? (activeLoad.loadNumber || activeLoad.loadRef || `LD-${activeLoad.id.slice(0, 4).toUpperCase()}`) : '';
-    const origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
-    const destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    let origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
+    let destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    if (activeLoad?.stops && activeLoad.stops.length > 0) {
+      const pStop = activeLoad.stops.find(s => s.type === 'PICKUP') || activeLoad.stops[0];
+      const dStop = activeLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || activeLoad.stops[activeLoad.stops.length - 1];
+      if (pStop && (!origin || origin === '')) origin = pStop.address || pStop.name || '';
+      if (dStop && (!destination || destination === '')) destination = dStop.address || dStop.name || '';
+    }
     const trailerType = activeLoad?.type || activeLoad?.loadType || '';
 
     // 2. Timeline Events formatting
@@ -2394,7 +2406,7 @@ exports.getPayrollData = async (req, res, next) => {
       }).catch(() => []) : [],
       prisma.load.findMany({
         where: { driverId },
-        include: { truck: true, items: true },
+        include: { truck: true, items: true, stops: true },
         orderBy: { createdAt: 'desc' },
         take: 3
       }).catch(() => [])
@@ -2402,8 +2414,14 @@ exports.getPayrollData = async (req, res, next) => {
 
     const activeLoad = activeLoads.find(l => ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'].includes(l.status)) || activeLoads[0] || null;
     const loadRef = activeLoad ? (activeLoad.loadNumber || activeLoad.loadRef || `LD-${activeLoad.id.slice(0, 4).toUpperCase()}`) : '';
-    const origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
-    const destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    let origin = activeLoad?.origin || activeLoad?.pickupLocation || '';
+    let destination = activeLoad?.destination || activeLoad?.deliveryLocation || '';
+    if (activeLoad?.stops && activeLoad.stops.length > 0) {
+      const pStop = activeLoad.stops.find(s => s.type === 'PICKUP') || activeLoad.stops[0];
+      const dStop = activeLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || activeLoad.stops[activeLoad.stops.length - 1];
+      if (pStop && (!origin || origin === '')) origin = pStop.address || pStop.name || '';
+      if (dStop && (!destination || destination === '')) destination = dStop.address || dStop.name || '';
+    }
 
     // Payroll records from DB only
     let payRecords = [];
@@ -2531,7 +2549,13 @@ exports.getPayrollData = async (req, res, next) => {
       },
       ytdEarningsBreakdown: {
         total: `$${totalGrossEarnings.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-        items: []
+        items: [
+          { name: 'Base Pay', amount: fmtMoney(effectiveBase) },
+          { name: 'Load Allowances', amount: fmtMoney(effectiveLoadAllow) },
+          { name: 'Distance Allowances', amount: fmtMoney(effectiveDistAllow) },
+          { name: 'Other Allowances', amount: '$0.00' },
+          { name: 'Bonuses', amount: '$0.00' }
+        ]
       },
       taxStatements: [],
       activeLoad: activeLoad ? {

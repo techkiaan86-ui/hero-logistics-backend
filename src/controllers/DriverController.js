@@ -224,7 +224,15 @@ exports.create = async (req, res, next) => {
       state: payload.state || payload.State || null,
       postalCode: payload.postalCode || payload.PostalCode || null,
       companyId: effectiveCompanyId,
-      branchId: branchIdVal
+      branchId: branchIdVal,
+      // 5. Payroll Information
+      payType: payload.payType || payload.PayType || 'Hourly',
+      payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      bankName: payload.bankName || payload.BankName || null,
+      accountNumber: payload.accountNumber || payload.AccountNumber || null,
+      routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
+      taxNumber: payload.taxNumber || payload.TaxNumber || null,
+      superFund: payload.superFund || payload.SuperannuationFund || null
     };
 
     if (payload.dob || payload.DateofBirth) {
@@ -390,6 +398,29 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.category !== undefined || rawPayload.DriverCategory !== undefined) data.category = rawPayload.category || rawPayload.DriverCategory || null;
   if (rawPayload.shift !== undefined || rawPayload.Shift !== undefined) data.shift = rawPayload.shift || rawPayload.Shift || null;
   if (rawPayload.notes !== undefined) data.notes = rawPayload.notes;
+
+  if (rawPayload.payType !== undefined || rawPayload.PayType !== undefined) {
+    data.payType = rawPayload.payType || rawPayload.PayType || null;
+  }
+  if (rawPayload.payRate !== undefined || rawPayload.PayRate !== undefined) {
+    const pr = rawPayload.payRate !== undefined ? rawPayload.payRate : rawPayload.PayRate;
+    data.payRate = pr !== null && pr !== '' ? parseFloat(pr) : null;
+  }
+  if (rawPayload.bankName !== undefined || rawPayload.BankName !== undefined) {
+    data.bankName = rawPayload.bankName || rawPayload.BankName || null;
+  }
+  if (rawPayload.accountNumber !== undefined || rawPayload.AccountNumber !== undefined) {
+    data.accountNumber = rawPayload.accountNumber || rawPayload.AccountNumber || null;
+  }
+  if (rawPayload.routingNumber !== undefined || rawPayload.BSBRouting !== undefined || rawPayload.bsbNumber !== undefined) {
+    data.routingNumber = rawPayload.routingNumber || rawPayload.BSBRouting || rawPayload.bsbNumber || null;
+  }
+  if (rawPayload.taxNumber !== undefined || rawPayload.TaxNumber !== undefined) {
+    data.taxNumber = rawPayload.taxNumber || rawPayload.TaxNumber || null;
+  }
+  if (rawPayload.superFund !== undefined || rawPayload.SuperannuationFund !== undefined) {
+    data.superFund = rawPayload.superFund || rawPayload.SuperannuationFund || null;
+  }
   
   if (rawPayload.branchId !== undefined) {
     data.branchId = rawPayload.branchId;
