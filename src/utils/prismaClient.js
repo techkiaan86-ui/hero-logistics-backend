@@ -19,11 +19,11 @@ try {
     user,
     password,
     database,
-    connectionLimit: 15,
+    connectionLimit: 30,
     allowPublicKeyRetrieval: true,
-    connectTimeout: 10000,
-    acquireTimeout: 15000,
-    idleTimeout: 15000
+    connectTimeout: 3000,
+    acquireTimeout: 4000,
+    idleTimeout: 10000
   });
   prisma = new PrismaClient({ adapter });
 } catch (err) {
