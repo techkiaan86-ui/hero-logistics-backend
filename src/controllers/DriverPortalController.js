@@ -772,6 +772,9 @@ exports.getPickupLoad = async (req, res, next) => {
           stops: { orderBy: { sequenceIndex: 'asc' } },
           items: true
         },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+
       if (!load) {
         load = await prisma.load.findFirst({
           where: {
@@ -1049,6 +1052,9 @@ exports.getDeliveryPOD = async (req, res, next) => {
           items: true,
           customer: true
         },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+
       if (!load) {
         load = await prisma.load.findFirst({
           where: {
@@ -1292,6 +1298,9 @@ exports.getActiveRun = async (req, res, next) => {
           truck: true,
           trailer: true
         },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+
       if (!load) {
         load = await prisma.load.findFirst({
           where: {
