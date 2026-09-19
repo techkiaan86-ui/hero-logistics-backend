@@ -125,12 +125,13 @@ exports.getDashboard = async (req, res, next) => {
     let completedLoads = driverLoads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status) && new Date(l.updatedAt || l.createdAt) >= startOfWeek);
     let upcomingLoads = activeLoads.filter(l => l.status === 'ASSIGNED' || l.status === 'PENDING');
 
-    // Current active load
+    // Current active load or most recent completed load
     let currentLoadData = null;
-    let currentLoadObj = activeLoads.find(l => l.status === 'IN_TRANSIT') || activeLoads[0];
+    let currentLoadObj = activeLoads.find(l => l.status === 'IN_TRANSIT') || activeLoads[0] || driverLoads[0];
 
     if (currentLoadObj) {
-      const statusLabel = currentLoadObj.status === 'IN_TRANSIT' ? 'In Transit' : (currentLoadObj.status === 'DISPATCHED' ? 'Dispatched' : 'Assigned');
+      const isDeliveredState = ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(currentLoadObj.status);
+      const statusLabel = currentLoadObj.status === 'IN_TRANSIT' ? 'In Transit' : (currentLoadObj.status === 'DISPATCHED' ? 'Dispatched' : (isDeliveredState ? 'Delivered' : 'Assigned'));
       
       let origin = currentLoadObj.origin || currentLoadObj.pickupAddress;
       let destination = currentLoadObj.destination || currentLoadObj.deliveryAddress;
@@ -771,8 +772,19 @@ exports.getPickupLoad = async (req, res, next) => {
           stops: { orderBy: { sequenceIndex: 'asc' } },
           items: true
         },
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => null);
+      if (!load) {
+        load = await prisma.load.findFirst({
+          where: {
+            driverId,
+            ...(driver?.companyId && { companyId: driver.companyId })
+          },
+          include: {
+            stops: { orderBy: { sequenceIndex: 'asc' } },
+            items: true
+          },
+          orderBy: { createdAt: 'desc' }
+        }).catch(() => null);
+      }
     }
 
     if (!load) {
@@ -1037,8 +1049,20 @@ exports.getDeliveryPOD = async (req, res, next) => {
           items: true,
           customer: true
         },
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => null);
+      if (!load) {
+        load = await prisma.load.findFirst({
+          where: {
+            driverId,
+            ...(driver?.companyId && { companyId: driver.companyId })
+          },
+          include: {
+            stops: { orderBy: { sequenceIndex: 'asc' } },
+            items: true,
+            customer: true
+          },
+          orderBy: { createdAt: 'desc' }
+        }).catch(() => null);
+      }
     }
 
     if (!load) {
@@ -1268,8 +1292,21 @@ exports.getActiveRun = async (req, res, next) => {
           truck: true,
           trailer: true
         },
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => null);
+      if (!load) {
+        load = await prisma.load.findFirst({
+          where: {
+            driverId,
+            ...(driver?.companyId && { companyId: driver.companyId })
+          },
+          include: {
+            stops: { orderBy: { sequenceIndex: 'asc' } },
+            items: true,
+            truck: true,
+            trailer: true
+          },
+          orderBy: { createdAt: 'desc' }
+        }).catch(() => null);
+      }
     }
 
     if (!load) {
