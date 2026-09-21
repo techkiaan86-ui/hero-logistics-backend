@@ -959,6 +959,7 @@ exports.createDriver = async (req, res, next) => {
       companyId: effectiveCompanyId,
       payType: payload.payType || payload.PayType || 'Hourly',
       payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      loadPaySchedule: typeof payload.loadPaySchedule === 'object' ? JSON.stringify(payload.loadPaySchedule) : (payload.loadPaySchedule || null),
       bankName: payload.bankName || payload.BankName || null,
       accountNumber: payload.accountNumber || payload.AccountNumber || null,
       routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,

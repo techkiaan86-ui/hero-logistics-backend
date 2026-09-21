@@ -250,6 +250,7 @@ exports.create = async (req, res, next) => {
       // 5. Payroll Information
       payType: payload.payType || payload.PayType || 'Hourly',
       payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      loadPaySchedule: typeof payload.loadPaySchedule === 'object' ? JSON.stringify(payload.loadPaySchedule) : (payload.loadPaySchedule || null),
       bankName: payload.bankName || payload.BankName || null,
       accountNumber: payload.accountNumber || payload.AccountNumber || null,
       routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
@@ -427,6 +428,9 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.payRate !== undefined || rawPayload.PayRate !== undefined) {
     const pr = rawPayload.payRate !== undefined ? rawPayload.payRate : rawPayload.PayRate;
     data.payRate = pr !== null && pr !== '' ? parseFloat(pr) : null;
+  }
+  if (rawPayload.loadPaySchedule !== undefined) {
+    data.loadPaySchedule = typeof rawPayload.loadPaySchedule === 'object' ? JSON.stringify(rawPayload.loadPaySchedule) : (rawPayload.loadPaySchedule || null);
   }
   if (rawPayload.bankName !== undefined || rawPayload.BankName !== undefined) {
     data.bankName = rawPayload.bankName || rawPayload.BankName || null;

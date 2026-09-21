@@ -893,8 +893,9 @@ model Driver {
   hvCertified     Boolean   @default(false) // Heavy Vehicle
 
   // 5. Payroll Information
-  payType       String? // e.g., "Daily", "Hourly"
+  payType       String? // e.g., "Daily", "Hourly", "Per Load", "Per Km"
   payRate       Float? // e.g., 350.00
+  loadPaySchedule String? @db.Text // JSON array of named per-load rate choices
   bankName      String?
   accountNumber String?
   routingNumber String? // BSB
