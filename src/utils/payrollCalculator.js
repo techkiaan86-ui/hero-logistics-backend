@@ -1,4 +1,9 @@
-﻿const prisma = require('./prismaClient');
+const prisma = require('./prismaClient');
+const {
+  calculateHourlyDriverPay,
+  calculatePerKmDriverPay,
+  calculatePerLoadDriverPay
+} = require('./driverPayCalculator');
 
 /**
  * Calculate dynamic earnings and deductions for a driver based on:
@@ -48,7 +53,7 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     completedLoadsCount = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status)).length;
     activeLoadsCount = loads.filter(l => ['IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status)).length;
     
-    // Total KMs estimation: 650 km per completed trip, or from odometer
+    // Total KMs driven from loads
     totalKmDriven = completedLoadsCount * 650;
     if (activeLoadsCount > 0) {
       totalKmDriven += activeLoadsCount * 250;
@@ -57,7 +62,7 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     console.warn('Could not fetch driver loads for pay calculation:', err?.message);
   }
 
-  // 3. Dynamic Calculation based on payType
+  // 3. Dynamic Calculation based on payType using decoupled driverPayCalculator
   let basePay = 0;
   let loadAllowance = 0;
   let distanceAllow = 0;
@@ -68,30 +73,34 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   if (normalizedType.includes('load')) {
     // === PER LOAD ===
-    const ratePerLoad = rawRate > 0 ? rawRate : 250.00;
     const effectiveLoads = completedLoadsCount + activeLoadsCount;
-    loadAllowance = Math.round(effectiveLoads * ratePerLoad * 100) / 100;
+    const calc = calculatePerLoadDriverPay({ driverRate: rawRate });
+    loadAllowance = Math.round(effectiveLoads * calc.grossPay * 100) / 100;
     basePay = loadAllowance;
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
     // === PER KM ===
-    const ratePerKm = rawRate > 0 ? rawRate : 0.85;
-    const effectiveKm = totalKmDriven;
-    distanceAllow = Math.round(effectiveKm * ratePerKm * 100) / 100;
+    const calc = calculatePerKmDriverPay({ distanceKm: totalKmDriven, perKmRate: rawRate });
+    distanceAllow = calc.grossPay;
     basePay = distanceAllow;
   } else {
     // === HOURLY (Default) ===
-    const hourlyRate = rawRate > 0 ? rawRate : 35.00;
-    const effectiveHours = hoursWorked > 0 
-      ? hoursWorked 
-      : (completedLoadsCount > 0 ? completedLoadsCount * 8 : (activeLoadsCount > 0 ? activeLoadsCount * 4 : 0));
-    basePay = Math.round(effectiveHours * hourlyRate * 100) / 100;
+    const calc = calculateHourlyDriverPay({ hoursWorked, hourlyRate: rawRate });
+    basePay = calc.grossPay;
   }
 
-  // 4. Compute Totals & Statutory Deductions
+  // 4. Compute Totals, PAYG Tax Withholding & Employer Superannuation Contribution
   const grossEarnings = Math.round((basePay + (loadAllowance > 0 && normalizedType.includes('hourly') ? loadAllowance : 0) + (distanceAllow > 0 && normalizedType.includes('hourly') ? distanceAllow : 0) + otherAllowance + bonuses) * 100) / 100;
+  
+  // PAYG Tax Withholding
   const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
-  const superAmount = Math.round(grossEarnings * 0.11 * 100) / 100;
-  const totalDeductions = Math.round((paygTax + superAmount) * 100) / 100;
+  
+  // Superannuation Guarantee Contribution (11.5%)
+  const superAmount = Math.round(grossEarnings * 0.115 * 100) / 100;
+  
+  // Total Deductions
+  const totalDeductions = Math.round(paygTax * 100) / 100;
+  
+  // Net Pay = Gross Earnings - Total Deductions
   const netPay = Math.round((grossEarnings - totalDeductions) * 100) / 100;
 
   return {
@@ -111,6 +120,7 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     grossEarnings,
     paygTax,
     superAmount,
+    employerSuperContribution: superAmount,
     totalDeductions,
     netPay,
     formatted: {

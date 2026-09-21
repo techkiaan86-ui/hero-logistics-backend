@@ -225,7 +225,7 @@ exports.getDashboard = async (req, res, next) => {
       rawGross = loadCnt * (baseRate > 0 ? baseRate : 250);
     } else if (pType.includes('km')) {
       const dist = completedLoads.length * 650 + (activeLoads.length > 0 ? activeLoads.length * 250 : 0);
-      rawGross = dist * (baseRate > 0 ? baseRate : 0.85);
+      rawGross = dist * (baseRate > 0 ? baseRate : 0.55);
     } else {
       const hrs = driveMinutes > 0 ? (driveMinutes / 60) : (completedLoads.length > 0 ? completedLoads.length * 8 : (activeLoads.length > 0 ? activeLoads.length * 4 : 0));
       rawGross = hrs * (baseRate > 0 ? baseRate : 35);
@@ -2573,7 +2573,7 @@ exports.getPayrollData = async (req, res, next) => {
     const effectiveDistAllow = hasDbPeriod ? (latestPeriod.distanceAllow || 0) : livePay.distanceAllow;
     const effectiveTax = hasDbPeriod ? (latestPeriod.paygTax || 0) : livePay.paygTax;
     const effectiveSuper = hasDbPeriod ? (latestPeriod.superAmount || 0) : livePay.superAmount;
-    const effectiveDed = hasDbPeriod ? (latestPeriod.totalDeductions || (effectiveTax + effectiveSuper)) : livePay.totalDeductions;
+    const effectiveDed = hasDbPeriod ? (latestPeriod.totalDeductions || effectiveTax) : livePay.totalDeductions;
 
     const fmtMoney = (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -2589,12 +2589,15 @@ exports.getPayrollData = async (req, res, next) => {
         accountNumber,
         accountName: driverName,
         payType: driver.payType || 'Hourly',
-        payRate: driver.payRate ? `$${Number(driver.payRate).toFixed(2)}` : '$35.00'
+        payRate: driver.payRate 
+          ? `$${Number(driver.payRate).toFixed(2)}${(driver.payType || '').toLowerCase().includes('km') ? '/km' : ((driver.payType || '').toLowerCase().includes('load') ? '/load' : '/hr')}` 
+          : ((driver.payType || '').toLowerCase().includes('km') ? '$0.55/km' : ((driver.payType || '').toLowerCase().includes('load') ? '$250.00/load' : '$35.00/hr'))
       },
       currentPeriod: {
         netPay: fmtMoney(effectiveNetPay),
         grossEarnings: fmtMoney(effectiveGross),
         totalDeductions: fmtMoney(effectiveDed),
+        superannuation: fmtMoney(effectiveSuper),
         payFrequency: latestPeriod?.frequency || 'Fortnightly',
         nextPayment: {
           date: latestPeriod?.payDate ? new Date(latestPeriod.payDate).toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : 'Next Scheduled Pay Cycle',
@@ -2609,7 +2612,8 @@ exports.getPayrollData = async (req, res, next) => {
         totalEarnings: fmtMoney(totalGrossEarnings > 0 ? totalGrossEarnings : effectiveGross),
         netPayReceived: fmtMoney(totalNetPaid > 0 ? totalNetPaid : effectiveNetPay),
         pendingPayments: fmtMoney(pendingPayments > 0 ? pendingPayments : (latestPeriod?.status === 'PROCESSING' ? effectiveNetPay : 0)),
-        totalDeductions: fmtMoney(effectiveDed)
+        totalDeductions: fmtMoney(effectiveDed),
+        totalSuperannuation: fmtMoney(effectiveSuper)
       },
       currentPayBreakdown: {
         period: nextPaymentPeriodStr,
@@ -2622,10 +2626,13 @@ exports.getPayrollData = async (req, res, next) => {
         },
         deductions: {
           paygTax: fmtMoney(effectiveTax),
-          superannuation: fmtMoney(effectiveSuper),
+          superannuation: '$0.00 (Employer Paid)',
           unionFees: '$0.00',
           otherDeductions: '$0.00',
           totalDeductions: fmtMoney(effectiveDed)
+        },
+        employerContributions: {
+          superannuationGuarantee: fmtMoney(effectiveSuper)
         },
         estimatedNetPay: fmtMoney(effectiveNetPay),
         paySummaryTotalDeductions: fmtMoney(effectiveDed)

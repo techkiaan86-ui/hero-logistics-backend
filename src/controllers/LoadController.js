@@ -217,16 +217,36 @@ exports.create = async (req, res, next) => {
     }
     delete payload.customer;
 
-    // Convert plain stops array to Prisma nested create object
-    if (Array.isArray(payload.stops)) {
+    // Convert pickup/delivery locations or plain stops array into Prisma nested create object
+    const pickupLoc = payload.pickupLocation || payload.pickupAddress || payload.origin || null;
+    const deliveryLoc = payload.deliveryLocation || payload.deliveryAddress || payload.destination || null;
+
+    if (Array.isArray(payload.stops) && payload.stops.length > 0) {
       const stopsData = payload.stops.map((s, idx) => ({
         type: s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF'),
         sequenceIndex: typeof s.sequenceIndex === 'number' ? s.sequenceIndex : idx,
-        address: s.address || 'Address Not Specified',
+        address: s.address || s.location || 'Address Not Specified',
         contactName: s.contactName || null,
         contactPhone: s.contactPhone || null,
         instructions: s.instructions || null
       }));
+      payload.stops = { create: stopsData };
+    } else if (pickupLoc || deliveryLoc) {
+      const stopsData = [];
+      if (pickupLoc) {
+        stopsData.push({
+          type: 'PICKUP',
+          sequenceIndex: 0,
+          address: pickupLoc
+        });
+      }
+      if (deliveryLoc) {
+        stopsData.push({
+          type: 'DROPOFF',
+          sequenceIndex: stopsData.length,
+          address: deliveryLoc
+        });
+      }
       payload.stops = { create: stopsData };
     }
 
@@ -273,7 +293,23 @@ exports.create = async (req, res, next) => {
     }
 
     const agreedRate = payload.rate || payload.price || payload.revenue || payload.customerRate || null;
-    const agreedDriverPay = payload.driverPay || payload.driverRate || null;
+    let agreedDriverPay = payload.driverPay || payload.driverRate || null;
+
+    // Calculate dynamic driver payment if driverId is provided and driverPay is not hardcoded
+    if (payload.driverId && !agreedDriverPay) {
+      try {
+        const { calculateDriverPayForLoad } = require('../utils/driverPayCalculator');
+        const assignedDriver = await prisma.driver.findUnique({ where: { id: payload.driverId } });
+        if (assignedDriver) {
+          const calc = calculateDriverPayForLoad({ driver: assignedDriver, load: payload });
+          if (calc && calc.grossPay > 0) {
+            agreedDriverPay = calc.grossPay;
+          }
+        }
+      } catch (calcErr) {
+        console.warn('Driver pay calculation on load create catch:', calcErr?.message);
+      }
+    }
 
     let metaNotes = payload.notes || '';
     if (agreedRate) metaNotes += ` [AGREED_RATE:${agreedRate}]`;
@@ -282,6 +318,10 @@ exports.create = async (req, res, next) => {
 
     delete payload.pickupLocation;
     delete payload.deliveryLocation;
+    delete payload.pickupAddress;
+    delete payload.deliveryAddress;
+    delete payload.origin;
+    delete payload.destination;
     delete payload.driver;
     delete payload.truck;
     delete payload.customer;

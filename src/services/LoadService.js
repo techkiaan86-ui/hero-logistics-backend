@@ -131,18 +131,34 @@ class LoadService {
       }
     });
 
-    // Create Notification if driver is assigned
+    // Calculate dynamic driver pay & notify driver if newly assigned
     const newDriverId = assignment.driverId || load.driverId;
-    if (newDriverId && newDriverId !== load.driverId) {
-      await prisma.notification.create({
-        data: {
-          driverId: newDriverId,
-          type: 'DISPATCH',
-          title: 'New Load Assigned',
-          message: `Load ${updatedLoad.loadNumber || updatedLoad.id} has been assigned to you.`,
-          priority: 'HIGH'
+    if (newDriverId) {
+      try {
+        const { calculateDriverPayForLoad } = require('../utils/driverPayCalculator');
+        const assignedDriver = await prisma.driver.findUnique({ where: { id: newDriverId } });
+        if (assignedDriver) {
+          const calc = calculateDriverPayForLoad({ driver: assignedDriver, load });
+          if (calc && calc.grossPay > 0 && (!updatedLoad.notes || !updatedLoad.notes.includes('[DRIVER_PAY:'))) {
+            const updatedNotes = `${updatedLoad.notes || ''} [DRIVER_PAY:${calc.grossPay}]`.trim();
+            await prisma.load.update({ where: { id: loadId }, data: { notes: updatedNotes } }).catch(() => {});
+          }
         }
-      });
+      } catch (err) {
+        console.warn('Error calculating driver pay in LoadService:', err?.message);
+      }
+
+      if (newDriverId !== load.driverId) {
+        await prisma.notification.create({
+          data: {
+            driverId: newDriverId,
+            type: 'DISPATCH',
+            title: 'New Load Assigned',
+            message: `Load ${updatedLoad.loadNumber || updatedLoad.id} has been assigned to you.`,
+            priority: 'HIGH'
+          }
+        }).catch(() => {});
+      }
     }
 
     return updatedLoad;

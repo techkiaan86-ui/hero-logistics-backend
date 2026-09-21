@@ -515,19 +515,18 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
       }
     }
     if (!tripCredit || tripCredit === 0) {
-      if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
-        const rate = parseFloat(driver.payRate);
-        const pType = (driver.payType || '').toLowerCase();
-        if (pType.includes('km') || pType.includes('kilometre')) {
-          const km = parseFloat(load.totalDistance || load.distance || 0) || 650;
-          tripCredit = Math.round(rate * km * 100) / 100;
-        } else if (pType.includes('hour')) {
-          tripCredit = Math.round(rate * 8 * 100) / 100;
-        } else {
-          tripCredit = rate;
+      try {
+        const { calculateDriverPayForLoad } = require('../utils/driverPayCalculator');
+        const calc = calculateDriverPayForLoad({ driver, load });
+        if (calc && calc.grossPay > 0) {
+          tripCredit = calc.grossPay;
+        } else if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
+          tripCredit = parseFloat(driver.payRate);
         }
-      } else {
-        tripCredit = 250.00;
+      } catch (cErr) {
+        if (driver.payRate && !isNaN(parseFloat(driver.payRate))) {
+          tripCredit = parseFloat(driver.payRate);
+        }
       }
     }
 

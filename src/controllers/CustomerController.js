@@ -433,3 +433,91 @@ exports.getContacts = async (req, res, next) => {
     next(error);
   }
 };
+
+// Customer Rate Cards In-Memory / Context Store
+const customerRateCardStore = {};
+
+// Get Rate Cards for Customer
+exports.getRateCards = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const cards = customerRateCardStore[id] || [];
+    return sendSuccess(res, cards);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Add Rate Card to Customer
+exports.addRateCard = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { name, unit, rate, gst, status } = req.body;
+
+    if (!name) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Charge name is required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+
+    const card = {
+      id: `RC-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      customerId: id,
+      name: name.trim(),
+      unit: unit || 'Per Unit',
+      rate: parseFloat(rate) || 0,
+      gst: gst !== undefined ? parseFloat(gst) : 10.0,
+      status: status || 'Active',
+      createdAt: new Date().toISOString()
+    };
+
+    if (!customerRateCardStore[id]) customerRateCardStore[id] = [];
+    customerRateCardStore[id].unshift(card);
+
+    return sendSuccess(res, card, HTTP_STATUS.CREATED);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Update Rate Card for Customer
+exports.updateRateCard = async (req, res, next) => {
+  try {
+    const { id, cardId } = req.params;
+    const { name, unit, rate, gst, status } = req.body;
+
+    const cards = customerRateCardStore[id] || [];
+    const index = cards.findIndex(c => c.id === cardId);
+
+    if (index === -1) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Rate Card not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const updated = {
+      ...cards[index],
+      ...(name && { name: name.trim() }),
+      ...(unit && { unit }),
+      ...(rate !== undefined && { rate: parseFloat(rate) }),
+      ...(gst !== undefined && { gst: parseFloat(gst) }),
+      ...(status && { status }),
+      updatedAt: new Date().toISOString()
+    };
+
+    customerRateCardStore[id][index] = updated;
+    return sendSuccess(res, updated);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Delete Rate Card for Customer
+exports.deleteRateCard = async (req, res, next) => {
+  try {
+    const { id, cardId } = req.params;
+    if (customerRateCardStore[id]) {
+      customerRateCardStore[id] = customerRateCardStore[id].filter(c => c.id !== cardId);
+    }
+    return res.status(HTTP_STATUS.NO_CONTENT).send();
+  } catch (error) {
+    next(error);
+  }
+};
+

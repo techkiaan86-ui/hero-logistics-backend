@@ -22,4 +22,12 @@ router.route('/:id/contacts')
   .get(CustomerController.getContacts)
   .post(CustomerController.addContact);
 
+router.route('/:id/rate-cards')
+  .get(CustomerController.getRateCards)
+  .post(CustomerController.addRateCard);
+
+router.route('/:id/rate-cards/:cardId')
+  .put(CustomerController.updateRateCard)
+  .delete(CustomerController.deleteRateCard);
+
 module.exports = router;
