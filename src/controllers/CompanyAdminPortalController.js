@@ -947,7 +947,7 @@ exports.createDriver = async (req, res, next) => {
       firstName: payload.firstName || payload.FirstName || null,
       lastName: payload.lastName || payload.LastName || null,
       phone: payload.phone || payload.PhoneNumber || null,
-      email: payload.email || payload.EmailAddress || null,
+      email: (payload.email || payload.EmailAddress || payload.Username || payload.username || '').trim() || null,
       avatarUrl: cleanAvatarUrl(payload.avatarUrl || payload.photoPreview || payload.avatar || null),
       driverCode: (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null,
       licenseType: payload.licenceType || payload.licenseType || null,

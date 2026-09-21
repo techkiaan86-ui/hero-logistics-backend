@@ -179,16 +179,8 @@ exports.create = async (req, res, next) => {
 
     const rawAvatar = payload.avatarUrl || payload.photoPreview || payload.avatar || null;
 
-    let inputEmail = (payload.email || payload.EmailAddress || '').trim() || null;
+    let inputEmail = (payload.email || payload.EmailAddress || payload.Username || payload.username || '').trim() || null;
     let inputCode = (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null;
-
-    if (inputEmail) {
-      const existingEmail = await prisma.driver.findFirst({ where: { email: inputEmail } });
-      if (existingEmail) {
-        const parts = inputEmail.split('@');
-        inputEmail = `${parts[0]}_${Math.floor(1000 + Math.random() * 9000)}@${parts[1] || 'herologistics.com.au'}`;
-      }
-    }
 
     if (inputCode) {
       const existingCode = await prisma.driver.findFirst({ where: { driverCode: inputCode } });
@@ -355,8 +347,8 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.phone !== undefined || rawPayload.PhoneNumber !== undefined) {
     data.phone = rawPayload.phone || rawPayload.PhoneNumber || null;
   }
-  if (rawPayload.email !== undefined || rawPayload.EmailAddress !== undefined) {
-    const em = (rawPayload.email || rawPayload.EmailAddress || '').trim();
+  if (rawPayload.email !== undefined || rawPayload.EmailAddress !== undefined || rawPayload.Username !== undefined || rawPayload.username !== undefined) {
+    const em = (rawPayload.email || rawPayload.EmailAddress || rawPayload.Username || rawPayload.username || '').trim();
     data.email = em ? em : null;
   }
 
