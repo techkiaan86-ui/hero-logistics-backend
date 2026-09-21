@@ -179,16 +179,8 @@ exports.create = async (req, res, next) => {
 
     const rawAvatar = payload.avatarUrl || payload.photoPreview || payload.avatar || null;
 
-    let inputEmail = (payload.email || payload.EmailAddress || '').trim() || null;
+    let inputEmail = (payload.email || payload.EmailAddress || payload.Username || payload.username || '').trim() || null;
     let inputCode = (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null;
-
-    if (inputEmail) {
-      const existingEmail = await prisma.driver.findFirst({ where: { email: inputEmail } });
-      if (existingEmail) {
-        const parts = inputEmail.split('@');
-        inputEmail = `${parts[0]}_${Math.floor(1000 + Math.random() * 9000)}@${parts[1] || 'herologistics.com.au'}`;
-      }
-    }
 
     if (inputCode) {
       const existingCode = await prisma.driver.findFirst({ where: { driverCode: inputCode } });
@@ -250,6 +242,7 @@ exports.create = async (req, res, next) => {
       // 5. Payroll Information
       payType: payload.payType || payload.PayType || 'Hourly',
       payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      loadPaySchedule: typeof payload.loadPaySchedule === 'object' ? JSON.stringify(payload.loadPaySchedule) : (payload.loadPaySchedule || null),
       bankName: payload.bankName || payload.BankName || null,
       accountNumber: payload.accountNumber || payload.AccountNumber || null,
       routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
@@ -354,8 +347,8 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.phone !== undefined || rawPayload.PhoneNumber !== undefined) {
     data.phone = rawPayload.phone || rawPayload.PhoneNumber || null;
   }
-  if (rawPayload.email !== undefined || rawPayload.EmailAddress !== undefined) {
-    const em = (rawPayload.email || rawPayload.EmailAddress || '').trim();
+  if (rawPayload.email !== undefined || rawPayload.EmailAddress !== undefined || rawPayload.Username !== undefined || rawPayload.username !== undefined) {
+    const em = (rawPayload.email || rawPayload.EmailAddress || rawPayload.Username || rawPayload.username || '').trim();
     data.email = em ? em : null;
   }
 
@@ -427,6 +420,9 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.payRate !== undefined || rawPayload.PayRate !== undefined) {
     const pr = rawPayload.payRate !== undefined ? rawPayload.payRate : rawPayload.PayRate;
     data.payRate = pr !== null && pr !== '' ? parseFloat(pr) : null;
+  }
+  if (rawPayload.loadPaySchedule !== undefined) {
+    data.loadPaySchedule = typeof rawPayload.loadPaySchedule === 'object' ? JSON.stringify(rawPayload.loadPaySchedule) : (rawPayload.loadPaySchedule || null);
   }
   if (rawPayload.bankName !== undefined || rawPayload.BankName !== undefined) {
     data.bankName = rawPayload.bankName || rawPayload.BankName || null;

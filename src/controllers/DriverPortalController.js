@@ -9,12 +9,12 @@ const { saveBase64Image } = require('../utils/fileStorage');
  */
 const resolveDriver = async (req) => {
   const userId = req.user?.id || req.user?.userId;
-  const userEmail = req.user?.email || req.user?.name;
+  let userEmail = req.user?.email || req.user?.name;
   const tenantCompanyId = req.tenantId || req.user?.companyId || req.user?.tenantId;
 
-  // 1. Try finding by userId (scoped to company if known)
+  // 1. Try finding by userId (scoped or unscoped)
   if (userId) {
-    const driverByUser = await prisma.driver.findFirst({
+    let driverByUser = await prisma.driver.findFirst({
       where: {
         userId,
         ...(tenantCompanyId && { companyId: tenantCompanyId })
@@ -25,13 +25,32 @@ const resolveDriver = async (req) => {
         branch: true
       }
     });
+    if (!driverByUser) {
+      driverByUser = await prisma.driver.findFirst({
+        where: { userId },
+        include: {
+          currentVehicle: true,
+          company: true,
+          branch: true
+        }
+      });
+    }
     if (driverByUser) return driverByUser;
   }
 
-  // 2. Try finding by exact email
+  // 2. Lookup user record in DB to get email/name if missing from token
+  let dbUser = null;
+  if (userId) {
+    dbUser = await prisma.user.findUnique({ where: { id: userId } }).catch(() => null);
+    if (dbUser?.email && !userEmail) {
+      userEmail = dbUser.email;
+    }
+  }
+
+  // 3. Try finding by exact email
   if (userEmail) {
     const cleanEmail = String(userEmail).toLowerCase().trim();
-    const driverByEmail = await prisma.driver.findFirst({
+    let driverByEmail = await prisma.driver.findFirst({
       where: {
         email: cleanEmail,
         ...(tenantCompanyId && { companyId: tenantCompanyId })
@@ -42,6 +61,16 @@ const resolveDriver = async (req) => {
         branch: true
       }
     });
+    if (!driverByEmail) {
+      driverByEmail = await prisma.driver.findFirst({
+        where: { email: cleanEmail },
+        include: {
+          currentVehicle: true,
+          company: true,
+          branch: true
+        }
+      });
+    }
     if (driverByEmail) {
       if (userId && !driverByEmail.userId) {
         await prisma.driver.update({
@@ -50,6 +79,32 @@ const resolveDriver = async (req) => {
         }).catch(() => {});
       }
       return driverByEmail;
+    }
+  }
+
+  // 4. Auto-provision a Driver profile if this user has DRIVER role but no profile yet
+  if (dbUser && (dbUser.role === 'DRIVER' || req.user?.role === 'DRIVER')) {
+    try {
+      const names = (dbUser.name || 'Driver').split(' ');
+      const newDriver = await prisma.driver.create({
+        data: {
+          userId: dbUser.id,
+          firstName: names[0] || 'Driver',
+          lastName: names.slice(1).join(' ') || '',
+          email: dbUser.email || userEmail || `driver_${Date.now()}@herologistics.com.au`,
+          companyId: dbUser.companyId || tenantCompanyId || null,
+          status: 'AVAILABLE',
+          driverCode: `DRV-${Math.floor(1000 + Math.random() * 9000)}`
+        },
+        include: {
+          currentVehicle: true,
+          company: true,
+          branch: true
+        }
+      });
+      if (newDriver) return newDriver;
+    } catch (e) {
+      console.warn('Auto-provisioning driver profile error:', e.message);
     }
   }
 
@@ -99,17 +154,17 @@ exports.getDashboard = async (req, res, next) => {
         take: 5
       }).catch(() => []),
       // 4. Assigned vehicle
-      driver.currentVehicle?.[0]
+      driver?.currentVehicle?.[0]
         ? Promise.resolve(driver.currentVehicle[0])
-        : prisma.vehicle.findFirst({
+        : (driverId ? prisma.vehicle.findFirst({
           where: { currentDriverId: driverId }
-        }).catch(() => null),
+        }).catch(() => null) : Promise.resolve(null)),
       // 5. Messages involving this driver or driver's user
       prisma.message ? prisma.message.findMany({
         where: {
           OR: [
-            { recipientId: driver.userId || driverId },
-            { senderId: driver.userId || driverId }
+            { recipientId: driver?.userId || driverId || 'none' },
+            { senderId: driver?.userId || driverId || 'none' }
           ]
         },
         orderBy: { createdAt: 'desc' },
@@ -217,8 +272,8 @@ exports.getDashboard = async (req, res, next) => {
     const remDriveStr = `${remHours}h ${remMins < 10 ? '0' : ''}${remMins}m (HOS)`;
 
     // Dynamic pay calculation respecting driver.payType ("Hourly", "Per Load", "Per Km")
-    const baseRate = parseFloat(driver.payRate) || 0;
-    const pType = (driver.payType || 'Hourly').toLowerCase();
+    const baseRate = parseFloat(driver?.payRate) || 0;
+    const pType = (driver?.payType || 'Hourly').toLowerCase();
     let rawGross = 0;
     if (pType.includes('load')) {
       const loadCnt = completedLoads.length || (activeLoads.length > 0 ? activeLoads.length : 0);
@@ -273,7 +328,7 @@ exports.getDashboard = async (req, res, next) => {
       });
     }
 
-    if (driver.licenseExpiry) {
+    if (driver?.licenseExpiry) {
       const expDate = new Date(driver.licenseExpiry);
       const daysUntilExpiry = Math.ceil((expDate - new Date()) / (1000 * 60 * 60 * 24));
       if (daysUntilExpiry <= 30) {
@@ -307,7 +362,7 @@ exports.getDashboard = async (req, res, next) => {
       'OFF_DUTY': 'Off Duty',
       'ON_LEAVE': 'On Leave'
     };
-    const currentStatusDisplay = statusMap[driver.status] || driver.status || 'On Duty';
+    const currentStatusDisplay = statusMap[driver?.status] || driver?.status || 'On Duty';
 
     return sendSuccess(res, {
       driverInfo: {
@@ -334,13 +389,13 @@ exports.getDashboard = async (req, res, next) => {
       currentLoad: currentLoadData,
       todaySchedule: scheduleItems,
       hosLog: {
-        driveTimeElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? driveTimeStr : '0h 00m',
-        driveTimeLeft: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? remDriveStr : '--',
-        drivePercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)) : 0,
-        shiftElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m` : '0h 00m',
+        driveTimeElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE') ? driveTimeStr : '0h 00m',
+        driveTimeLeft: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE') ? remDriveStr : '--',
+        drivePercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE') ? Math.min(100, Math.round((driveMinutes / (11 * 60)) * 100)) : 0,
+        shiftElapsed: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE') ? `${Math.floor(driveMinutes / 60)}h ${driveMinutes % 60}m` : '0h 00m',
         shiftMax: '14h max',
-        shiftPercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status) ? Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)) : 0,
-        nextBreakDue: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver.status)
+        shiftPercent: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE') ? Math.min(100, Math.round((driveMinutes / (14 * 60)) * 100)) : 0,
+        nextBreakDue: ['AVAILABLE', 'ON_DUTY', 'IN_TRANSIT'].includes(driver?.status || 'AVAILABLE')
           ? (driveMinutes > 0 ? `in ${Math.max(0, 4 - Math.floor(driveMinutes / 60))}h` : 'in 4h 00m')
           : 'Shift Not Started'
       },
@@ -442,7 +497,7 @@ exports.getChecklistContext = async (req, res, next) => {
     if (!driver) {
       return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
     }
-    const driverId = driver.id;
+    const driverId = driver?.id || '';
 
     const [driverLoads, preStartChecklists, assignedVehicle] = await Promise.all([
       prisma.load.findMany({
@@ -455,11 +510,11 @@ exports.getChecklistContext = async (req, res, next) => {
         orderBy: { createdAt: 'desc' },
         take: 5
       }).catch(() => []),
-      driver.currentVehicle?.[0]
+      driver?.currentVehicle?.[0]
         ? Promise.resolve(driver.currentVehicle[0])
-        : prisma.vehicle.findFirst({
+        : (driverId ? prisma.vehicle.findFirst({
           where: { currentDriverId: driverId }
-        }).catch(() => null)
+        }).catch(() => null) : Promise.resolve(null))
     ]);
 
     const activeLoads = driverLoads.filter(l => ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'].includes(l.status));
@@ -1570,18 +1625,18 @@ exports.getDriverMessages = async (req, res, next) => {
         orderBy: { createdAt: 'desc' },
         take: 3
       }).catch(() => []),
-      driver.currentVehicle?.[0]
+      driver?.currentVehicle?.[0]
         ? Promise.resolve(driver.currentVehicle[0])
-        : prisma.vehicle.findFirst({
+        : (driverId ? prisma.vehicle.findFirst({
           where: { currentDriverId: driverId }
-        }).catch(() => null),
+        }).catch(() => null) : Promise.resolve(null)),
       prisma.user.findMany({
-        where: driver.companyId ? { companyId: driver.companyId } : {},
+        where: driver?.companyId ? { companyId: driver.companyId } : {},
         select: { id: true, name: true, role: true, phone: true, email: true },
         take: 15
       }).catch(() => []),
       prisma.conversation.findMany({
-        where: driver.companyId ? { companyId: driver.companyId } : {},
+        where: driver?.companyId ? { companyId: driver.companyId } : {},
         include: {
           participants: {
             include: { user: { select: { id: true, name: true, role: true, email: true } } }
@@ -1802,13 +1857,13 @@ exports.getDriverDocuments = async (req, res, next) => {
         orderBy: { createdAt: 'desc' },
         take: 3
       }).catch(() => []),
-      driver.currentVehicle?.[0]
+      driver?.currentVehicle?.[0]
         ? Promise.resolve(driver.currentVehicle[0])
-        : prisma.vehicle.findFirst({
+        : (driverId ? prisma.vehicle.findFirst({
           where: { currentDriverId: driverId }
-        }).catch(() => null),
+        }).catch(() => null) : Promise.resolve(null)),
       prisma.document.findMany({
-        where: { OR: [{ driverId }, { vehicleId: driver.currentVehicle?.[0]?.id || 'none' }] },
+        where: { OR: [{ driverId: driverId || 'none' }, { vehicleId: driver?.currentVehicle?.[0]?.id || 'none' }] },
         orderBy: { createdAt: 'desc' }
       }).catch(() => []),
       prisma.driverActivity.findMany({
@@ -2793,9 +2848,9 @@ exports.getTrailerSwapData = async (req, res, next) => {
     }
     // No DB trailers = empty array (no hardcoded fallback)
 
-    const driverName = `${driver.firstName || ''} ${driver.lastName || ''}`.trim() || driver.user?.name || '';
-    const driverCode = driver.driverNumber || driver.user?.userCode || '';
-    const truck = driver.currentVehicle?.[0] || null;
+    const driverName = driver ? `${driver.firstName || ''} ${driver.lastName || ''}`.trim() : (driver?.user?.name || req.user?.name || '');
+    const driverCode = driver?.driverNumber || driver?.driverCode || driver?.user?.userCode || '';
+    const truck = driver?.currentVehicle?.[0] || null;
 
     return sendSuccess(res, {
       driverInfo: {
