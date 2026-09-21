@@ -318,8 +318,25 @@ exports.update = async (req, res, next) => {
 };
 
 // Helper: Cascade delete a company and all its relational records
-async function cascadeDeleteCompany(companyId) {
-  if (!companyId) return;
+async function cascadeDeleteCompany(companyIdentifier) {
+  if (!companyIdentifier) return;
+
+  const targetComp = await prisma.company.findFirst({
+    where: {
+      OR: [
+        { id: companyIdentifier },
+        { tenantId: companyIdentifier }
+      ]
+    }
+  }).catch(() => null);
+
+  if (!targetComp) {
+    const err = new Error('Company not found');
+    err.code = 'P2025';
+    throw err;
+  }
+
+  const companyId = targetComp.id;
 
   // 1. Delete Load children & loads
   const loads = await prisma.load.findMany({ where: { companyId }, select: { id: true } }).catch(() => []);
