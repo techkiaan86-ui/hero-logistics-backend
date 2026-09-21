@@ -194,7 +194,22 @@ exports.createLoad = async (req, res, next) => {
 
     // Extract and preserve financial metadata
     const agreedRate = payload.rate || payload.price || payload.revenue || payload.customerRate || null;
-    const agreedDriverPay = payload.driverPay || payload.driverRate || null;
+    let agreedDriverPay = payload.driverPay || payload.driverRate || null;
+
+    if (payload.driverId && !agreedDriverPay) {
+      try {
+        const { calculateDriverPayForLoad } = require('../utils/driverPayCalculator');
+        const assignedDriver = await prisma.driver.findUnique({ where: { id: payload.driverId } });
+        if (assignedDriver) {
+          const calc = calculateDriverPayForLoad({ driver: assignedDriver, load: payload });
+          if (calc && calc.grossPay > 0) {
+            agreedDriverPay = calc.grossPay;
+          }
+        }
+      } catch (calcErr) {
+        console.warn('Driver pay calculation on load create catch:', calcErr?.message);
+      }
+    }
 
     let metaNotes = payload.notes || '';
     if (agreedRate) metaNotes += ` [AGREED_RATE:${agreedRate}]`;
