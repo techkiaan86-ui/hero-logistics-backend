@@ -271,56 +271,64 @@ exports.getDashboard = async (req, res, next) => {
     const remMins = remainingDriveMinutes % 60;
     const remDriveStr = `${remHours}h ${remMins < 10 ? '0' : ''}${remMins}m (HOS)`;
 
-    // Dynamic pay calculation respecting actual DB payPeriod and load pay rates
+    // Dynamic pay calculation: STRICT RULE - Only delivered/completed loads are paid!
+    // Until driver marks load as DELIVERED via Active Run, earnings and pricing stay at $0.00.
     let calculatedPay = 0;
-    const dbPayPeriod = await prisma.payPeriod.findFirst({
-      where: { driverId },
-      orderBy: { periodStart: 'desc' }
-    }).catch(() => null);
+    const allDeliveredLoads = driverLoads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
+    
+    if (allDeliveredLoads.length > 0) {
+      const dbPayPeriod = await prisma.payPeriod.findFirst({
+        where: { driverId },
+        orderBy: { periodStart: 'desc' }
+      }).catch(() => null);
 
-    if (dbPayPeriod && (dbPayPeriod.netPay || dbPayPeriod.grossEarnings)) {
-      calculatedPay = Number(dbPayPeriod.netPay || dbPayPeriod.grossEarnings || 0);
-    } else {
-      let totalLoadPay = 0;
-      const relevantLoads = completedLoads.length > 0 ? completedLoads : activeLoads;
+      if (dbPayPeriod && (dbPayPeriod.netPay || dbPayPeriod.grossEarnings)) {
+        calculatedPay = Number(dbPayPeriod.netPay || dbPayPeriod.grossEarnings || 0);
+      } else {
+        let totalLoadPay = 0;
+        const relevantLoads = completedLoads.length > 0 ? completedLoads : allDeliveredLoads;
 
-      let scheduleRates = {};
-      if (driver?.loadPaySchedule) {
-        try {
-          const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
-          if (Array.isArray(parsed)) {
-            parsed.forEach(item => {
-              if (item.isSelected !== false && item.amount) {
-                const destKey = (item.deliveryLocation || '').trim().toLowerCase();
-                if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
-              }
-            });
-          }
-        } catch (e) {}
-      }
-
-      relevantLoads.forEach(ld => {
-        let loadAmt = 0;
-        if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
-          const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
-          if (m && m[1]) loadAmt = parseFloat(m[1]);
+        let scheduleRates = {};
+        if (driver?.loadPaySchedule) {
+          try {
+            const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+            if (Array.isArray(parsed)) {
+              parsed.forEach(item => {
+                if (item.isSelected !== false && item.amount) {
+                  const destKey = (item.deliveryLocation || '').trim().toLowerCase();
+                  if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+                }
+              });
+            }
+          } catch (e) {}
         }
-        if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
-          const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
-          for (const [k, v] of Object.entries(scheduleRates)) {
-            if (dKey.includes(k) || k.includes(dKey)) {
-              loadAmt = v;
-              break;
+
+        relevantLoads.forEach(ld => {
+          let loadAmt = 0;
+          if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
+            const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+            if (m && m[1]) loadAmt = parseFloat(m[1]);
+          }
+          if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
+            const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
+            for (const [k, v] of Object.entries(scheduleRates)) {
+              if (dKey.includes(k) || k.includes(dKey)) {
+                loadAmt = v;
+                break;
+              }
             }
           }
-        }
-        if (loadAmt <= 0 && parseFloat(driver?.payRate) > 0) {
-          loadAmt = parseFloat(driver.payRate);
-        }
-        totalLoadPay += loadAmt;
-      });
+          if (loadAmt <= 0 && parseFloat(driver?.payRate) > 0) {
+            loadAmt = parseFloat(driver.payRate);
+          }
+          totalLoadPay += loadAmt;
+        });
 
-      calculatedPay = Math.round(totalLoadPay * 100) / 100;
+        calculatedPay = Math.round(totalLoadPay * 100) / 100;
+      }
+    } else {
+      // 0 delivered loads = 0 pay
+      calculatedPay = 0;
     }
 
     // Schedule items purely from assigned loads

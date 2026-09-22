@@ -88,8 +88,8 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   if (normalizedType.includes('load')) {
     // === PER LOAD ===
-    let totalLoadAmount = 0;
-    const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED', 'IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status));
+    // Only count loads that have been DELIVERED / COMPLETED. In-transit and assigned loads are NOT counted until delivered.
+    const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
     targetLoads.forEach(ld => {
       let loadAmt = 0;
       if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
