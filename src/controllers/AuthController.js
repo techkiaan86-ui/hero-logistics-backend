@@ -13,20 +13,22 @@ exports.login = async (req, res, next) => {
 
     const { user, accessToken, refreshToken } = await AuthService.login(email, password, ipAddress, userAgent);
 
-    // Set HttpOnly Cookies
+    const isProd = process.env.NODE_ENV === 'production';
+    // Set Cookies (SameSite 'none' + secure required for cross-origin in production)
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       maxAge: 15 * 60 * 1000 // 15 mins
     });
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
+
 
     // Remove password from response
     delete user.password;
@@ -260,8 +262,8 @@ exports.impersonate = async (req, res, next) => {
     // Set cookie
     res.cookie('accessToken', impersonatedToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       maxAge: 15 * 60 * 1000
     });
 
