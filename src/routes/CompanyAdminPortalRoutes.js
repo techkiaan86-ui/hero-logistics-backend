@@ -42,6 +42,7 @@ router.post('/live-tracking/vehicles/:vehicleId/telemetry', ctrl.pushTelemetry);
 // 4. Drivers
 router.get('/drivers', ctrl.getDrivers);
 router.post('/drivers', ctrl.createDriver);
+router.get('/drivers/:id/expenses', ctrl.getDriverExpenses);
 router.delete('/drivers/:id', ctrl.deleteDriver);
 
 // 5. Vehicles

@@ -3936,6 +3936,7 @@ exports.getLoadExpenses = async (req, res, next) => {
 
     const expenses = await prisma.loadExpense.findMany({
       where: { loadId: targetLoad.id },
+      include: { driver: true, vehicle: true },
       orderBy: { createdAt: 'desc' }
     });
     const mapped = expenses.map(exp => ({
@@ -3949,7 +3950,9 @@ exports.getLoadExpenses = async (req, res, next) => {
       status: exp.status === 'APPROVED' ? 'Approved' : exp.status === 'REJECTED' ? 'Rejected' : 'Pending',
       color: exp.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : exp.status === 'REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700',
       vendorName: exp.vendorName,
-      receiptUrl: exp.receiptUrl
+      receiptUrl: exp.receiptUrl,
+      driverName: exp.driver ? `${exp.driver.firstName || ''} ${exp.driver.lastName || ''}`.trim() : null,
+      driverCode: exp.driver?.driverCode || null
     }));
     return sendSuccess(res, mapped);
   } catch (error) { next(error); }
@@ -3960,17 +3963,22 @@ exports.createLoadExpense = async (req, res, next) => {
     const { id } = req.params;
     const companyId = await resolveCompanyId(req);
     const targetLoad = await resolveOrCreateLoad(id, companyId);
-    const { type, desc, description, amount, date, vendorName, receiptUrl } = req.body;
+    const { type, desc, description, amount, date, vendorName, receiptUrl, driverId, vehicleId } = req.body;
 
     const crypto = require('crypto');
     const parsedAmount = parseFloat(amount) || 0;
     const parsedDate = date ? new Date(date) : new Date();
+
+    const assignedDriverId = driverId || targetLoad?.driverId || null;
+    const assignedVehicleId = vehicleId || targetLoad?.truckId || null;
 
     const expense = await prisma.loadExpense.create({
       data: {
         id: crypto.randomUUID(),
         loadId: targetLoad.id,
         companyId: targetLoad.companyId || companyId,
+        driverId: assignedDriverId,
+        vehicleId: assignedVehicleId,
         type: type || 'Other',
         description: desc || description || 'New Expense',
         amount: parsedAmount,
@@ -3992,10 +4000,50 @@ exports.createLoadExpense = async (req, res, next) => {
       status: 'Pending',
       color: 'bg-amber-50 text-amber-700',
       vendorName: expense.vendorName,
-      receiptUrl: expense.receiptUrl
+      receiptUrl: expense.receiptUrl,
+      driverId: expense.driverId,
+      vehicleId: expense.vehicleId
     };
 
     return sendSuccess(res, mapped, HTTP_STATUS.CREATED);
+  } catch (error) { next(error); }
+};
+
+exports.getDriverExpenses = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const companyId = await resolveCompanyId(req);
+
+    const expenses = await prisma.loadExpense.findMany({
+      where: {
+        companyId,
+        OR: [
+          { driverId: id },
+          { load: { driverId: id } }
+        ]
+      },
+      include: {
+        load: { select: { loadRef: true, id: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const mapped = expenses.map(exp => ({
+      id: exp.id,
+      date: exp.date ? new Date(exp.date).toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB'),
+      rawDate: exp.date,
+      type: exp.type || 'Other',
+      desc: exp.description,
+      amount: `$${parseFloat(exp.amount || 0).toFixed(2)}`,
+      rawAmount: exp.amount,
+      status: exp.status === 'APPROVED' ? 'Approved' : exp.status === 'REJECTED' ? 'Rejected' : 'Pending',
+      color: exp.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : exp.status === 'REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700',
+      vendorName: exp.vendorName,
+      receiptUrl: exp.receiptUrl,
+      loadRef: exp.load?.loadRef || 'General'
+    }));
+
+    return sendSuccess(res, mapped);
   } catch (error) { next(error); }
 };
 
