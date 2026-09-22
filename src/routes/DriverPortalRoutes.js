@@ -39,6 +39,7 @@ router.post('/delivery-pod/confirm-delivery', DriverPortalController.confirmDeli
 router.get('/active-run', DriverPortalController.getActiveRun);
 router.get('/jobs', DriverPortalController.getJobs);
 router.post('/jobs', DriverPortalController.createJobRequest);
+router.delete('/jobs/:id', DriverPortalController.deleteJob);
 router.get('/active-run', DriverPortalController.getActiveRun);
 router.get('/pickup-load', DriverPortalController.getPickupLoad);
 router.post('/pickup-load/item-status', DriverPortalController.updatePickupItemStatus);

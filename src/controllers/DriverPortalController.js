@@ -840,6 +840,87 @@ exports.createJobRequest = async (req, res, next) => {
 };
 
 // ============================================================================
+// 7B. DELETE JOB (Cascade delete load, stops, items, expenses, and update payroll)
+// ============================================================================
+exports.deleteJob = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const driver = await resolveDriver(req);
+    const driverId = driver?.id;
+
+    const targetLoad = await prisma.load.findFirst({
+      where: {
+        OR: [{ id }, { loadRef: id }]
+      }
+    }).catch(() => null);
+
+    if (!targetLoad) {
+      return sendSuccess(res, { success: true, message: 'Job not found or already deleted' });
+    }
+
+    const loadId = targetLoad.id;
+    const targetDriverId = targetLoad.driverId || driverId;
+
+    // 1. Cascade delete all related records
+    if (prisma.customerInvoice) await prisma.customerInvoice.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.preStartChecklist) await prisma.preStartChecklist.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.telemetryLog) await prisma.telemetryLog.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.timesheet) await prisma.timesheet.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.routeStop) await prisma.routeStop.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.loadItem) await prisma.loadItem.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.loadExpense) await prisma.loadExpense.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.document) await prisma.document.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.loadActivity) await prisma.loadActivity.deleteMany({ where: { loadId } }).catch(() => {});
+    if (prisma.message) await prisma.message.deleteMany({ where: { loadId } }).catch(() => {});
+
+    // 2. Delete the load itself
+    await prisma.load.deleteMany({
+      where: { OR: [{ id: loadId }, { loadRef: loadId }] }
+    }).catch(() => {});
+
+    // 3. Recalculate driver's PayPeriod so payroll is immediately updated!
+    if (targetDriverId && prisma.payPeriod) {
+      try {
+        const remainingLoads = await prisma.load.findMany({
+          where: { driverId: targetDriverId, status: { in: ['DELIVERED', 'COMPLETED', 'CLOSED'] } },
+          select: { notes: true }
+        });
+        let newTotal = 0;
+        remainingLoads.forEach(l => {
+          if (l.notes && l.notes.includes('[DRIVER_PAY:')) {
+            const m = l.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+            if (m && m[1]) newTotal += parseFloat(m[1]);
+          }
+        });
+        const latestPeriod = await prisma.payPeriod.findFirst({
+          where: { driverId: targetDriverId },
+          orderBy: { periodStart: 'desc' }
+        });
+        if (latestPeriod) {
+          await prisma.payPeriod.update({
+            where: { id: latestPeriod.id },
+            data: {
+              grossEarnings: newTotal,
+              loadAllowance: newTotal,
+              netPay: newTotal,
+              paygTax: 0,
+              superAmount: 0,
+              totalDeductions: 0
+            }
+          });
+        }
+      } catch (payErr) {
+        console.warn('PayPeriod recalculation error on load delete:', payErr?.message);
+      }
+    }
+
+    return sendSuccess(res, { success: true, deletedId: loadId, message: 'Job deleted successfully' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ============================================================================
 // 8. GET PICKUP LOAD (Active Load for Pickup)
 // ============================================================================
 exports.getPickupLoad = async (req, res, next) => {
