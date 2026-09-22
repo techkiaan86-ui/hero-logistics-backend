@@ -2695,6 +2695,19 @@ exports.getPayrollData = async (req, res, next) => {
     // Payroll records from DB only
     let payRecords = [];
     if (dbPayPeriods && dbPayPeriods.length > 0) {
+      dbPayPeriods.forEach(p => {
+        if (p.grossEarnings > 0 && (p.netPay < p.grossEarnings || p.totalDeductions > 0)) {
+          p.netPay = p.grossEarnings;
+          p.paygTax = 0;
+          p.superAmount = 0;
+          p.totalDeductions = 0;
+          prisma.payPeriod.update({
+            where: { id: p.id },
+            data: { netPay: p.grossEarnings, paygTax: 0, superAmount: 0, totalDeductions: 0 }
+          }).catch(() => null);
+        }
+      });
+
       payRecords = dbPayPeriods.map((p, idx) => {
         let status = 'Paid';
         let statusColor = 'bg-emerald-50 text-emerald-700 border-emerald-200';
@@ -2713,14 +2726,16 @@ exports.getPayrollData = async (req, res, next) => {
         const endStr = new Date(p.periodEnd).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
         const payDateStr = p.payDate ? `Paid on ${new Date(p.payDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : `Pay Date: ${endStr}`;
 
+        const recNetPay = p.netPay || p.grossEarnings || 0;
+
         return {
           id: p.id,
           period: `${startStr} – ${endStr}`,
           payDate: payDateStr,
-          netPay: `$${(p.netPay || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          netPay: `$${(recNetPay || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
           status,
           statusColor,
-          amount: p.netPay || 0
+          amount: recNetPay || 0
         };
       });
     }

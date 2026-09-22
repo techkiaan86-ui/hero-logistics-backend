@@ -61,7 +61,7 @@ function calculatePerKmDriverPay({ distanceKm = 0, perKmRate = 0 }) {
  * @param {object} [params.driverRouteRates] - Map or object of route-specific driver pay rates e.g. { Sydney: 450, Melbourne: 350, QLD: 550 }
  * @returns {object}
  */
-function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, driverRouteRates = null }) {
+function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, driverRouteRates = null, driver = null }) {
   let effectiveRate = 0;
 
   // Priority 1: Explicit load-specific driver pay entered on load object
@@ -80,7 +80,36 @@ function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, 
     }
   }
 
-  // Priority 3: Destination-specific route rate for driver (Sydney, Melbourne, Queensland)
+  // Priority 3: Driver loadPaySchedule JSON options
+  const scheduleSource = driver?.loadPaySchedule || load?.driverLoadPaySchedule;
+  if (effectiveRate <= 0 && scheduleSource) {
+    try {
+      const parsed = typeof scheduleSource === 'string' ? JSON.parse(scheduleSource) : scheduleSource;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const destStr = String(load?.destination || load?.deliveryLocation || '').trim().toLowerCase();
+        const origStr = String(load?.origin || load?.pickupLocation || '').trim().toLowerCase();
+
+        let matched = parsed.find(item => {
+          if (!item.amount) return false;
+          const pLoc = (item.pickupLocation || '').trim().toLowerCase();
+          const dLoc = (item.deliveryLocation || '').trim().toLowerCase();
+          const pMatch = !pLoc || origStr.includes(pLoc) || pLoc.includes(origStr);
+          const dMatch = !dLoc || destStr.includes(dLoc) || dLoc.includes(destStr);
+          return pMatch && dMatch;
+        });
+
+        if (!matched) {
+          matched = parsed.find(item => item.isSelected && parseFloat(item.amount) > 0) || parsed.find(item => parseFloat(item.amount) > 0);
+        }
+
+        if (matched && parseFloat(matched.amount) > 0) {
+          effectiveRate = parseFloat(matched.amount);
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Priority 4: Destination-specific route rate for driver (Sydney, Melbourne, Queensland)
   if (effectiveRate <= 0 && load) {
     const destStr = String(load.destination || load.to || load.deliveryAddress || '').toLowerCase();
     const origStr = String(load.origin || load.from || load.pickupAddress || '').toLowerCase();
@@ -89,7 +118,6 @@ function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, 
     const routeRatesMap = driverRouteRates || (load.driverRouteRates ? load.driverRouteRates : null);
 
     if (routeRatesMap && typeof routeRatesMap === 'object') {
-      // Priority 3a: Destination-specific match first (e.g. Queensland destination vs Sydney origin)
       for (const [routeKey, rVal] of Object.entries(routeRatesMap)) {
         if (routeKey && rVal && parseFloat(rVal) > 0) {
           if (destStr && destStr.includes(routeKey.toLowerCase())) {
@@ -99,7 +127,6 @@ function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, 
         }
       }
 
-      // Priority 3b: Full route string match if destination alone did not match
       if (effectiveRate <= 0) {
         for (const [routeKey, rVal] of Object.entries(routeRatesMap)) {
           if (routeKey && rVal && parseFloat(rVal) > 0) {
@@ -113,17 +140,16 @@ function calculatePerLoadDriverPay({ load = null, driverRate = 0, ruleRate = 0, 
     }
   }
 
-  // Priority 4: Route Rule Rate passed from load route pricing
+  // Priority 5: Route Rule Rate passed from load route pricing
   if (effectiveRate <= 0 && parseFloat(ruleRate) > 0) {
     effectiveRate = parseFloat(ruleRate);
   }
 
-  // Priority 5: Driver's default base per-load pay rate
+  // Priority 6: Driver's default base per-load pay rate
   if (effectiveRate <= 0 && parseFloat(driverRate) > 0) {
     effectiveRate = parseFloat(driverRate);
   }
 
-  // Fallback: 0.00 (Zero hardcoded defaults such as $300)
   const grossPay = Math.round(effectiveRate * 100) / 100;
 
   return {
@@ -176,7 +202,7 @@ function calculateDriverPayForLoad({ driver, load = null, distanceKm = 0, hoursW
     if (typeof driverRouteRates === 'string') {
       try { driverRouteRates = JSON.parse(driverRouteRates); } catch (e) { driverRouteRates = null; }
     }
-    result = calculatePerLoadDriverPay({ load, driverRate, ruleRate: routeRuleRate, driverRouteRates });
+    result = calculatePerLoadDriverPay({ load, driverRate, ruleRate: routeRuleRate, driverRouteRates, driver });
   } else {
     // Hourly calculation path (default)
     let hrs = parseFloat(hoursWorked) || 0;

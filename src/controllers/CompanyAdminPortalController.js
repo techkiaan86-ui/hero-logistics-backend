@@ -543,6 +543,31 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
           tripCredit = parseFloat(driver.payRate);
         }
       }
+    if (!tripCredit || tripCredit === 0) {
+      // Check driver.loadPaySchedule if driver has saved load pay options
+      if (driver.loadPaySchedule) {
+        try {
+          const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const destStr = String(load.destination || load.deliveryLocation || '').trim().toLowerCase();
+            const origStr = String(load.origin || load.pickupLocation || '').trim().toLowerCase();
+            let matched = parsed.find(item => {
+              if (!item.amount) return false;
+              const pLoc = (item.pickupLocation || '').trim().toLowerCase();
+              const dLoc = (item.deliveryLocation || '').trim().toLowerCase();
+              const pMatch = !pLoc || origStr.includes(pLoc) || pLoc.includes(origStr);
+              const dMatch = !dLoc || destStr.includes(dLoc) || dLoc.includes(destStr);
+              return pMatch && dMatch;
+            });
+            if (!matched) {
+              matched = parsed.find(item => item.isSelected && parseFloat(item.amount) > 0) || parsed.find(item => parseFloat(item.amount) > 0);
+            }
+            if (matched && parseFloat(matched.amount) > 0) {
+              tripCredit = parseFloat(matched.amount);
+            }
+          }
+        } catch (e) {}
+      }
     }
 
     // 4. Resolve Active PayPeriod (or create new DRAFT PayPeriod for driver)
@@ -597,10 +622,10 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
     const bonuses = payPeriod.bonuses || 0;
 
     const grossEarnings = Math.round((newBasePay + newLoadAllowance + newDistanceAllow + otherAllowance + bonuses) * 100) / 100;
-    const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
-    const superAmount = Math.round(grossEarnings * 0.11 * 100) / 100;
-    const totalDeductions = Math.round((paygTax + superAmount) * 100) / 100;
-    const netPay = Math.round((grossEarnings - totalDeductions) * 100) / 100;
+    const paygTax = 0;
+    const superAmount = 0;
+    const totalDeductions = 0;
+    const netPay = grossEarnings; // 100% payout - no tax/deduction cuts
 
     // 6. Save Updated PayPeriod
     const updatedPayPeriod = await prisma.payPeriod.update({
@@ -610,9 +635,9 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
         distanceAllow: newDistanceAllow,
         basePay: newBasePay,
         grossEarnings,
-        paygTax,
-        superAmount,
-        totalDeductions,
+        paygTax: 0,
+        superAmount: 0,
+        totalDeductions: 0,
         netPay
       }
     });

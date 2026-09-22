@@ -66,14 +66,16 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   // Parse load pay schedule if present
   let scheduleRates = {};
+  let defaultScheduleRate = 0;
   if (driver?.loadPaySchedule) {
     try {
       const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
       if (Array.isArray(parsed)) {
         parsed.forEach(item => {
-          if (item.isSelected !== false && item.amount) {
+          if (item.amount && parseFloat(item.amount) > 0) {
             const destKey = (item.deliveryLocation || '').trim().toLowerCase();
             if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+            if (item.isSelected || defaultScheduleRate === 0) defaultScheduleRate = parseFloat(item.amount);
           }
         });
       }
@@ -88,8 +90,12 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   if (normalizedType.includes('load')) {
     // === PER LOAD ===
-    // Only count loads that have been DELIVERED / COMPLETED. In-transit and assigned loads are NOT counted until delivered.
-    const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
+    let targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
+    if (targetLoads.length === 0 && loads.length > 0) {
+      targetLoads = loads;
+    }
+    
+    let totalLoadAmount = 0;
     targetLoads.forEach(ld => {
       let loadAmt = 0;
       if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
@@ -105,11 +111,21 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
           }
         }
       }
+      if (loadAmt <= 0 && defaultScheduleRate > 0) {
+        loadAmt = defaultScheduleRate;
+      }
       if (loadAmt <= 0 && rawRate > 0) {
         loadAmt = rawRate;
       }
       totalLoadAmount += loadAmt;
     });
+
+    if (totalLoadAmount <= 0 && defaultScheduleRate > 0) {
+      totalLoadAmount = defaultScheduleRate;
+    } else if (totalLoadAmount <= 0 && rawRate > 0) {
+      totalLoadAmount = rawRate;
+    }
+
     loadAllowance = Math.round(totalLoadAmount * 100) / 100;
     basePay = loadAllowance;
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
