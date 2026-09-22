@@ -47,7 +47,7 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
         driverId: driver.id,
         createdAt: { gte: start, lte: end }
       },
-      select: { id: true, status: true, truck: { select: { odometerKm: true } } }
+      select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, truck: { select: { odometerKm: true } } }
     });
 
     completedLoadsCount = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status)).length;
@@ -58,25 +58,50 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     if (activeLoadsCount > 0) {
       totalKmDriven += activeLoadsCount * 250;
     }
-  } catch (err) {
-    console.warn('Could not fetch driver loads for pay calculation:', err?.message);
-  }
 
-  // 3. Dynamic Calculation based on payType using decoupled driverPayCalculator
-  let basePay = 0;
-  let loadAllowance = 0;
-  let distanceAllow = 0;
-  const otherAllowance = 0;
-  const bonuses = 0;
+    // Parse load pay schedule if present
+    let scheduleRates = {};
+    if (driver?.loadPaySchedule) {
+      try {
+        const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+        if (Array.isArray(parsed)) {
+          parsed.forEach(item => {
+            if (item.isSelected !== false && item.amount) {
+              const destKey = (item.deliveryLocation || '').trim().toLowerCase();
+              if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+            }
+          });
+        }
+      } catch (e) {}
+    }
 
-  const normalizedType = payType.toLowerCase();
-
-  if (normalizedType.includes('load')) {
-    // === PER LOAD ===
-    const effectiveLoads = completedLoadsCount + activeLoadsCount;
-    const calc = calculatePerLoadDriverPay({ driverRate: rawRate });
-    loadAllowance = Math.round(effectiveLoads * calc.grossPay * 100) / 100;
-    basePay = loadAllowance;
+    if (normalizedType.includes('load')) {
+      // === PER LOAD ===
+      let totalLoadAmount = 0;
+      const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED', 'IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status));
+      targetLoads.forEach(ld => {
+        let loadAmt = 0;
+        if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
+          const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+          if (m && m[1]) loadAmt = parseFloat(m[1]);
+        }
+        if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
+          const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
+          for (const [k, v] of Object.entries(scheduleRates)) {
+            if (dKey.includes(k) || k.includes(dKey)) {
+              loadAmt = v;
+              break;
+            }
+          }
+        }
+        if (loadAmt <= 0 && rawRate > 0) {
+          loadAmt = rawRate;
+        }
+        totalLoadAmount += loadAmt;
+      });
+      loadAllowance = Math.round(totalLoadAmount * 100) / 100;
+      basePay = loadAllowance;
+    }
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
     // === PER KM ===
     const calc = calculatePerKmDriverPay({ distanceKm: totalKmDriven, perKmRate: rawRate });
@@ -88,20 +113,14 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     basePay = calc.grossPay;
   }
 
-  // 4. Compute Totals, PAYG Tax Withholding & Employer Superannuation Contribution
+  // 4. Compute Totals: Gross Earnings = Net Pay (No Tax or Deductions)
   const grossEarnings = Math.round((basePay + (loadAllowance > 0 && normalizedType.includes('hourly') ? loadAllowance : 0) + (distanceAllow > 0 && normalizedType.includes('hourly') ? distanceAllow : 0) + otherAllowance + bonuses) * 100) / 100;
   
-  // PAYG Tax Withholding
-  const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
-  
-  // Superannuation Guarantee Contribution (11.5%)
-  const superAmount = Math.round(grossEarnings * 0.115 * 100) / 100;
-  
-  // Total Deductions
-  const totalDeductions = Math.round(paygTax * 100) / 100;
-  
-  // Net Pay = Gross Earnings - Total Deductions
-  const netPay = Math.round((grossEarnings - totalDeductions) * 100) / 100;
+  // No tax or deduction deductions - Driver receives 100% of earned amount
+  const paygTax = 0;
+  const superAmount = 0;
+  const totalDeductions = 0;
+  const netPay = grossEarnings;
 
   return {
     payType,
@@ -128,9 +147,9 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
       loadAllowance: `$${loadAllowance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       distanceAllowance: `$${distanceAllow.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       grossEarnings: `$${grossEarnings.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      paygTax: `$${paygTax.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      superAmount: `$${superAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      totalDeductions: `$${totalDeductions.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      paygTax: '$0.00',
+      superAmount: '$0.00',
+      totalDeductions: '$0.00',
       netPay: `$${netPay.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     }
   };

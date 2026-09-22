@@ -271,21 +271,57 @@ exports.getDashboard = async (req, res, next) => {
     const remMins = remainingDriveMinutes % 60;
     const remDriveStr = `${remHours}h ${remMins < 10 ? '0' : ''}${remMins}m (HOS)`;
 
-    // Dynamic pay calculation respecting driver.payType ("Hourly", "Per Load", "Per Km")
-    const baseRate = parseFloat(driver?.payRate) || 0;
-    const pType = (driver?.payType || 'Hourly').toLowerCase();
-    let rawGross = 0;
-    if (pType.includes('load')) {
-      const loadCnt = completedLoads.length || (activeLoads.length > 0 ? activeLoads.length : 0);
-      rawGross = loadCnt * (baseRate > 0 ? baseRate : 250);
-    } else if (pType.includes('km')) {
-      const dist = completedLoads.length * 650 + (activeLoads.length > 0 ? activeLoads.length * 250 : 0);
-      rawGross = dist * (baseRate > 0 ? baseRate : 0.55);
+    // Dynamic pay calculation respecting actual DB payPeriod and load pay rates
+    let calculatedPay = 0;
+    const dbPayPeriod = await prisma.payPeriod.findFirst({
+      where: { driverId },
+      orderBy: { periodStart: 'desc' }
+    }).catch(() => null);
+
+    if (dbPayPeriod && (dbPayPeriod.netPay || dbPayPeriod.grossEarnings)) {
+      calculatedPay = Number(dbPayPeriod.netPay || dbPayPeriod.grossEarnings || 0);
     } else {
-      const hrs = driveMinutes > 0 ? (driveMinutes / 60) : (completedLoads.length > 0 ? completedLoads.length * 8 : (activeLoads.length > 0 ? activeLoads.length * 4 : 0));
-      rawGross = hrs * (baseRate > 0 ? baseRate : 35);
+      let totalLoadPay = 0;
+      const relevantLoads = completedLoads.length > 0 ? completedLoads : activeLoads;
+
+      let scheduleRates = {};
+      if (driver?.loadPaySchedule) {
+        try {
+          const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+          if (Array.isArray(parsed)) {
+            parsed.forEach(item => {
+              if (item.isSelected !== false && item.amount) {
+                const destKey = (item.deliveryLocation || '').trim().toLowerCase();
+                if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+              }
+            });
+          }
+        } catch (e) {}
+      }
+
+      relevantLoads.forEach(ld => {
+        let loadAmt = 0;
+        if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
+          const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+          if (m && m[1]) loadAmt = parseFloat(m[1]);
+        }
+        if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
+          const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
+          for (const [k, v] of Object.entries(scheduleRates)) {
+            if (dKey.includes(k) || k.includes(dKey)) {
+              loadAmt = v;
+              break;
+            }
+          }
+        }
+        if (loadAmt <= 0 && parseFloat(driver?.payRate) > 0) {
+          loadAmt = parseFloat(driver.payRate);
+        }
+        totalLoadPay += loadAmt;
+      });
+
+      calculatedPay = Math.round(totalLoadPay * 100) / 100;
     }
-    const calculatedPay = Math.round(rawGross * 0.85 * 100) / 100;
 
     // Schedule items purely from assigned loads
     const scheduleItems = [];
@@ -403,7 +439,7 @@ exports.getDashboard = async (req, res, next) => {
       alerts: alerts,
       paySummary: {
         amount: calculatedPay,
-        taxNote: 'Before tax'
+        taxNote: 'Total Earnings'
       }
     });
 
@@ -2621,14 +2657,14 @@ exports.getPayrollData = async (req, res, next) => {
     });
 
     const hasDbPeriod = !!(latestPeriod && (latestPeriod.netPay || latestPeriod.grossEarnings));
-    const effectiveNetPay = hasDbPeriod ? latestPeriod.netPay : livePay.netPay;
     const effectiveGross = hasDbPeriod ? (latestPeriod.grossEarnings || latestPeriod.basePay) : livePay.grossEarnings;
+    const effectiveNetPay = effectiveGross; // 100% full amount paid, no tax or deductions
     const effectiveBase = hasDbPeriod ? (latestPeriod.basePay || 0) : livePay.basePay;
     const effectiveLoadAllow = hasDbPeriod ? (latestPeriod.loadAllowance || 0) : livePay.loadAllowance;
     const effectiveDistAllow = hasDbPeriod ? (latestPeriod.distanceAllow || 0) : livePay.distanceAllow;
-    const effectiveTax = hasDbPeriod ? (latestPeriod.paygTax || 0) : livePay.paygTax;
-    const effectiveSuper = hasDbPeriod ? (latestPeriod.superAmount || 0) : livePay.superAmount;
-    const effectiveDed = hasDbPeriod ? (latestPeriod.totalDeductions || effectiveTax) : livePay.totalDeductions;
+    const effectiveTax = 0;
+    const effectiveSuper = 0;
+    const effectiveDed = 0;
 
     const fmtMoney = (val) => `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -2680,17 +2716,17 @@ exports.getPayrollData = async (req, res, next) => {
           totalEarnings: fmtMoney(effectiveGross)
         },
         deductions: {
-          paygTax: fmtMoney(effectiveTax),
-          superannuation: '$0.00 (Employer Paid)',
+          paygTax: '$0.00',
+          superannuation: '$0.00',
           unionFees: '$0.00',
           otherDeductions: '$0.00',
-          totalDeductions: fmtMoney(effectiveDed)
+          totalDeductions: '$0.00'
         },
         employerContributions: {
-          superannuationGuarantee: fmtMoney(effectiveSuper)
+          superannuationGuarantee: '$0.00'
         },
         estimatedNetPay: fmtMoney(effectiveNetPay),
-        paySummaryTotalDeductions: fmtMoney(effectiveDed)
+        paySummaryTotalDeductions: '$0.00'
       },
       payHistory: payRecords,
       totalSummary: {
