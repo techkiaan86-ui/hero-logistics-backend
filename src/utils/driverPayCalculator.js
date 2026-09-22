@@ -187,10 +187,11 @@ function calculateDriverPayForLoad({ driver, load = null, distanceKm = 0, hoursW
   }
 
   const grossPay = result.grossPay;
-  const paygTax = Math.round(grossPay * 0.15 * 100) / 100;
-  const superContribution = Math.round(grossPay * 0.115 * 100) / 100;
-  const totalDeductions = paygTax;
-  const netPay = Math.round((grossPay - totalDeductions) * 100) / 100;
+  // No tax or deductions logic - gross amount equals net amount
+  const paygTax = 0;
+  const superContribution = 0;
+  const totalDeductions = 0;
+  const netPay = grossPay;
 
   return {
     ...result,
@@ -200,10 +201,10 @@ function calculateDriverPayForLoad({ driver, load = null, distanceKm = 0, hoursW
     netPay,
     formatted: {
       grossPay: `$${grossPay.toFixed(2)}`,
-      paygTax: `$${paygTax.toFixed(2)}`,
-      superContribution: `$${superContribution.toFixed(2)}`,
-      totalDeductions: `$${totalDeductions.toFixed(2)}`,
-      netPay: `$${netPay.toFixed(2)}`
+      paygTax: '$0.00',
+      superContribution: '$0.00',
+      totalDeductions: '$0.00',
+      netPay: `$${grossPay.toFixed(2)}`
     }
   };
 }
