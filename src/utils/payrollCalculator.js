@@ -16,6 +16,7 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   const payType = (driver.payType || 'Hourly').trim();
   const rawRate = parseFloat(driver.payRate) || 0;
+  const normalizedType = payType.toLowerCase();
 
   const start = startDate ? new Date(startDate) : new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
   const end = endDate ? new Date(endDate) : new Date();
@@ -40,9 +41,10 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
   let completedLoadsCount = 0;
   let activeLoadsCount = 0;
   let totalKmDriven = 0;
+  let loads = [];
 
   try {
-    const loads = await prisma.load.findMany({
+    loads = await prisma.load.findMany({
       where: {
         driverId: driver.id,
         createdAt: { gte: start, lte: end }
@@ -58,50 +60,58 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
     if (activeLoadsCount > 0) {
       totalKmDriven += activeLoadsCount * 250;
     }
+  } catch (err) {
+    console.warn('Could not fetch driver loads for pay calculation:', err?.message);
+  }
 
-    // Parse load pay schedule if present
-    let scheduleRates = {};
-    if (driver?.loadPaySchedule) {
-      try {
-        const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (item.isSelected !== false && item.amount) {
-              const destKey = (item.deliveryLocation || '').trim().toLowerCase();
-              if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
-            }
-          });
-        }
-      } catch (e) {}
-    }
+  // Parse load pay schedule if present
+  let scheduleRates = {};
+  if (driver?.loadPaySchedule) {
+    try {
+      const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+      if (Array.isArray(parsed)) {
+        parsed.forEach(item => {
+          if (item.isSelected !== false && item.amount) {
+            const destKey = (item.deliveryLocation || '').trim().toLowerCase();
+            if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+          }
+        });
+      }
+    } catch (e) {}
+  }
 
-    if (normalizedType.includes('load')) {
-      // === PER LOAD ===
-      let totalLoadAmount = 0;
-      const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED', 'IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status));
-      targetLoads.forEach(ld => {
-        let loadAmt = 0;
-        if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
-          const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
-          if (m && m[1]) loadAmt = parseFloat(m[1]);
-        }
-        if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
-          const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
-          for (const [k, v] of Object.entries(scheduleRates)) {
-            if (dKey.includes(k) || k.includes(dKey)) {
-              loadAmt = v;
-              break;
-            }
+  let basePay = 0;
+  let loadAllowance = 0;
+  let distanceAllow = 0;
+  let otherAllowance = 0;
+  let bonuses = 0;
+
+  if (normalizedType.includes('load')) {
+    // === PER LOAD ===
+    let totalLoadAmount = 0;
+    const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED', 'IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status));
+    targetLoads.forEach(ld => {
+      let loadAmt = 0;
+      if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
+        const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+        if (m && m[1]) loadAmt = parseFloat(m[1]);
+      }
+      if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
+        const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
+        for (const [k, v] of Object.entries(scheduleRates)) {
+          if (dKey.includes(k) || k.includes(dKey)) {
+            loadAmt = v;
+            break;
           }
         }
-        if (loadAmt <= 0 && rawRate > 0) {
-          loadAmt = rawRate;
-        }
-        totalLoadAmount += loadAmt;
-      });
-      loadAllowance = Math.round(totalLoadAmount * 100) / 100;
-      basePay = loadAllowance;
-    }
+      }
+      if (loadAmt <= 0 && rawRate > 0) {
+        loadAmt = rawRate;
+      }
+      totalLoadAmount += loadAmt;
+    });
+    loadAllowance = Math.round(totalLoadAmount * 100) / 100;
+    basePay = loadAllowance;
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
     // === PER KM ===
     const calc = calculatePerKmDriverPay({ distanceKm: totalKmDriven, perKmRate: rawRate });
