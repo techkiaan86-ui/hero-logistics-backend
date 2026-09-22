@@ -46,10 +46,9 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
   try {
     loads = await prisma.load.findMany({
       where: {
-        driverId: driver.id,
-        createdAt: { gte: start, lte: end }
+        driverId: driver.id
       },
-      select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, truck: { select: { odometerKm: true } } }
+      select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, origin: true, pickupLocation: true, truck: { select: { odometerKm: true } } }
     });
 
     completedLoadsCount = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status)).length;
