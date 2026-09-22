@@ -543,6 +543,7 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
           tripCredit = parseFloat(driver.payRate);
         }
       }
+    }
     if (!tripCredit || tripCredit === 0) {
       // Check driver.loadPaySchedule if driver has saved load pay options
       if (driver.loadPaySchedule) {
