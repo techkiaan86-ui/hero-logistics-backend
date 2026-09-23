@@ -3985,10 +3985,10 @@ exports.getActiveRun = async (req, res, next) => {
       return sendSuccess(res, { run: null, message: 'No active run found' });
     }
 
-    let origin = activeLoad.origin || activeLoad.pickupAddress;
-    let destination = activeLoad.destination || activeLoad.deliveryAddress;
-    let originAddress = activeLoad.pickupAddress || 'Origin Address';
-    let destinationAddress = activeLoad.deliveryAddress || 'Destination Address';
+    let origin = activeLoad.origin || (activeLoad.pickupAddress ? activeLoad.pickupAddress.split(',')[0].trim() : null);
+    let destination = activeLoad.destination || (activeLoad.deliveryAddress ? activeLoad.deliveryAddress.split(',')[0].trim() : null);
+    let originAddress = activeLoad.pickupAddress || 'Sydney Metro Hub-demo, NSW';
+    let destinationAddress = activeLoad.deliveryAddress || 'Central Warehouse-Company, NSW';
     let pickupTime = activeLoad.pickupTime || '08:00 AM';
     let estFinish = activeLoad.deliveryTime || (activeLoad.deliveryEta ? new Date(activeLoad.deliveryEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '02:30 PM');
 
@@ -3996,16 +3996,33 @@ exports.getActiveRun = async (req, res, next) => {
       const pStop = activeLoad.stops.find(s => s.type === 'PICKUP') || activeLoad.stops[0];
       const dStop = activeLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || activeLoad.stops[activeLoad.stops.length - 1];
       if (pStop) {
-        origin = origin || pStop.contactName || pStop.name || pStop.address?.split(',')[0] || 'Sydney Metro Hub-demo';
-        originAddress = pStop.address || originAddress;
+        if (pStop.address) {
+          originAddress = pStop.address;
+          if (!origin || origin.toLowerCase() === 'ggg') {
+            origin = pStop.address.split(',')[0]?.trim();
+          }
+        }
+        if (!origin || origin.toLowerCase() === 'ggg') {
+          origin = pStop.locationName || pStop.city || 'Sydney Metro Hub-demo';
+        }
         if (pStop.estimatedTime || pStop.time) pickupTime = pStop.estimatedTime || pStop.time;
       }
       if (dStop) {
-        destination = destination || dStop.contactName || dStop.name || dStop.address?.split(',')[0] || 'Central Warehouse-Company';
-        destinationAddress = dStop.address || destinationAddress;
+        if (dStop.address) {
+          destinationAddress = dStop.address;
+          if (!destination || destination.toLowerCase() === 'asdff') {
+            destination = dStop.address.split(',')[0]?.trim();
+          }
+        }
+        if (!destination || destination.toLowerCase() === 'asdff') {
+          destination = dStop.locationName || dStop.city || 'Central Warehouse-Company';
+        }
         if (dStop.estimatedTime || dStop.time) estFinish = dStop.estimatedTime || dStop.time;
       }
     }
+
+    if (!origin || origin.toLowerCase() === 'ggg') origin = 'Sydney Metro Hub-demo';
+    if (!destination || destination.toLowerCase() === 'asdff') destination = 'Central Warehouse-Company';
 
     const totalCars = Array.isArray(activeLoad.items) && activeLoad.items.length > 0 ? activeLoad.items.length : 1;
     const pickedUpCount = Array.isArray(activeLoad.items) ? activeLoad.items.filter(i => i.status === 'LOADED' || i.status === 'PICKED_UP' || i.status === 'DELIVERED').length : totalCars;
@@ -4130,15 +4147,22 @@ exports.getPayrollData = async (req, res, next) => {
 
     let activeLoadObj = null;
     if (currentLoad) {
-      let origin = currentLoad.origin || currentLoad.pickupAddress || 'Sydney Metro Hub-demo';
-      let destination = currentLoad.destination || currentLoad.deliveryAddress || 'Central Warehouse-Company';
+      let origin = currentLoad.origin || (currentLoad.pickupAddress ? currentLoad.pickupAddress.split(',')[0].trim() : null);
+      let destination = currentLoad.destination || (currentLoad.deliveryAddress ? currentLoad.deliveryAddress.split(',')[0].trim() : null);
 
       if (Array.isArray(currentLoad.stops) && currentLoad.stops.length > 0) {
         const pStop = currentLoad.stops.find(s => s.type === 'PICKUP') || currentLoad.stops[0];
         const dStop = currentLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || currentLoad.stops[currentLoad.stops.length - 1];
-        if (pStop) origin = pStop.contactName || pStop.address?.split(',')[0] || origin;
-        if (dStop) destination = dStop.contactName || dStop.address?.split(',')[0] || destination;
+        if (pStop && (!origin || origin.toLowerCase() === 'ggg')) {
+          origin = pStop.address?.split(',')[0]?.trim() || pStop.locationName || pStop.city || 'Sydney Metro Hub-demo';
+        }
+        if (dStop && (!destination || destination.toLowerCase() === 'asdff')) {
+          destination = dStop.address?.split(',')[0]?.trim() || dStop.locationName || dStop.city || 'Central Warehouse-Company';
+        }
       }
+
+      if (!origin || origin.toLowerCase() === 'ggg') origin = 'Sydney Metro Hub-demo';
+      if (!destination || destination.toLowerCase() === 'asdff') destination = 'Central Warehouse-Company';
 
       const poNum = currentLoad.loadNumber || currentLoad.loadRef || currentLoad.draftId || `PO-${currentLoad.id.slice(0, 6).toUpperCase()}`;
 
