@@ -317,6 +317,93 @@ exports.updateLoad = async (req, res, next) => {
       else delete payload.priority;
     }
 
+    // Extract stops and items before cleaning
+    const stops = payload.stops;
+    const items = payload.items;
+    delete payload.stops;
+    delete payload.items;
+
+    // Clean non-schema and auto-generated fields
+    delete payload.id;
+    delete payload.createdAt;
+    delete payload.updatedAt;
+    delete payload.companyId;
+    delete payload.customerName;
+    delete payload.driverName;
+    delete payload.truckRego;
+    delete payload.trailerRego;
+    delete payload.pickupLocation;
+    delete payload.deliveryLocation;
+    delete payload.pickupAddress;
+    delete payload.deliveryAddress;
+    delete payload.pickupDate;
+    delete payload.deliveryDate;
+    delete payload.scheduledDate;
+    delete payload.totalWeight;
+    delete payload.weight;
+    delete payload.rate;
+    delete payload.rateUSD;
+    delete payload.price;
+    delete payload.revenue;
+    delete payload.distance;
+    delete payload.pickupStopId;
+    delete payload.driverPay;
+    delete payload.driverRate;
+    delete payload.customerRate;
+    delete payload.documents;
+    delete payload.customer;
+    delete payload.driver;
+    delete payload.truck;
+    delete payload.trailer;
+
+    // Remove empty/invalid relation IDs to prevent foreign key errors
+    if (!payload.customerId) delete payload.customerId;
+    if (!payload.driverId) delete payload.driverId;
+    if (!payload.truckId) delete payload.truckId;
+    if (!payload.trailerId) delete payload.trailerId;
+    if (!payload.branchId) delete payload.branchId;
+
+    // Handle nested relation updates for stops
+    if (Array.isArray(stops)) {
+      payload.stops = {
+        deleteMany: {},
+        create: stops.map((s, idx) => {
+          let sType = (s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF')).toUpperCase();
+          if (sType.includes('PICK')) sType = 'PICKUP';
+          else sType = 'DROPOFF';
+          return {
+            type: sType,
+            sequenceIndex: s.sequenceIndex ?? idx,
+            address: s.address || 'Location Stop',
+            contactName: s.contactName || null,
+            contactPhone: s.contactPhone || null,
+            scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : null
+          };
+        })
+      };
+    }
+
+    // Handle nested relation updates for items
+    if (Array.isArray(items)) {
+      payload.items = {
+        deleteMany: {},
+        create: items.map(item => ({
+          stockRef: item.stockRef || item.stockRec || item.rego || item.rcog || item.vin || item.description || 'ITEM-REF',
+          description: item.description || item.itemDescription || item.type || 'Freight Item',
+          category: item.type || item.category || 'General Freight',
+          make: item.make || null,
+          model: item.model || null,
+          rego: item.rego || item.rcog || null,
+          vin: item.vin || null,
+          year: item.year ? parseInt(String(item.year).replace(/[^0-9]/g, ''), 10) || null : null,
+          color: item.colour || item.color || null,
+          quantity: item.quantity ? parseInt(String(item.quantity).replace(/[^0-9]/g, ''), 10) || 1 : 1,
+          weightKg: item.weightValue || (item.weight ? parseInt(String(item.weight).replace(/[^0-9]/g, ''), 10) || 0 : 0),
+          notes: typeof item.notes === 'string' ? item.notes : (item.details || JSON.stringify(item))
+        }))
+      };
+    }
+
     const data = await prisma.load.update({
       where: { id: targetLoad.id },
       data: payload,
