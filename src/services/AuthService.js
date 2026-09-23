@@ -28,17 +28,17 @@ function inferRoleAndName(email) {
     return EXACT_DEMO_ACCOUNTS[clean];
   }
 
-  let role = 'COMPANY_ADMIN';
+  let role = 'DRIVER'; // Default role for standard emails
   if (clean.includes('super') || clean.includes('admin@hero') || clean.includes('platform')) {
     role = 'SUPER_ADMIN';
-  } else if (clean.includes('company') || clean.includes('admin')) {
+  } else if (clean.includes('driver')) {
+    role = 'DRIVER';
+  } else if (clean.startsWith('admin@') || clean.includes('admin.') || clean.includes('admin_') || clean.includes('admin-') || clean.includes('companyadmin') || clean.startsWith('company@') || clean.includes('company-admin')) {
     role = 'COMPANY_ADMIN';
   } else if (clean.includes('sale')) {
     role = 'SALES';
   } else if (clean.includes('dispatch')) {
     role = 'DISPATCHER';
-  } else if (clean.includes('driver')) {
-    role = 'DRIVER';
   } else if (clean.includes('ware')) {
     role = 'WAREHOUSE';
   } else if (clean.includes('yard')) {
@@ -62,11 +62,27 @@ class AuthService {
   async login(email, password, ipAddress, userAgent) {
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanPassword = (password || '').trim() || '123456';
-    const { name: inferredName, role: inferredRole } = inferRoleAndName(cleanEmail);
+    let { name: inferredName, role: inferredRole } = inferRoleAndName(cleanEmail);
 
     let user = null;
+    let existingDriver = null;
 
-    // 1. Safe DB lookup
+    // Check if a Driver profile exists for this email
+    try {
+      if (prisma && prisma.driver) {
+        existingDriver = await prisma.driver.findFirst({
+          where: { email: cleanEmail },
+          include: { currentVehicle: true }
+        }).catch(() => null);
+      }
+    } catch (e) {}
+
+    // If driver record exists, user MUST have DRIVER role
+    if (existingDriver) {
+      inferredRole = 'DRIVER';
+    }
+
+    // 1. Safe DB lookup for User
     try {
       if (prisma && prisma.user) {
         user = await prisma.user.findFirst({
@@ -76,6 +92,17 @@ class AuthService {
     } catch (dbErr) {
       console.warn('DB lookup warning during login:', dbErr.message);
       user = null;
+    }
+
+    // If user exists in DB but driver record exists, force user.role to DRIVER
+    if (user && existingDriver && user.role !== 'DRIVER') {
+      user.role = 'DRIVER';
+      try {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { role: 'DRIVER' }
+        }).catch(() => {});
+      } catch (e) {}
     }
 
     // 2. If user exists in DB, attempt password verification & auto-sync if needed
@@ -120,16 +147,28 @@ class AuthService {
           }).catch(() => null);
         }
 
+        const effectiveCompanyId = existingDriver?.companyId || (inferredRole === 'SUPER_ADMIN' ? null : (defaultCompany?.id || null));
+        const effectiveBranchId = existingDriver?.branchId || null;
+        const displayName = existingDriver ? `${existingDriver.firstName || ''} ${existingDriver.lastName || ''}`.trim() || inferredName : inferredName;
+
         user = await prisma.user.create({
           data: {
-            name: inferredName,
+            name: displayName,
             email: cleanEmail,
             password: passHash,
             role: inferredRole,
             status: 'ACTIVE',
-            companyId: inferredRole === 'SUPER_ADMIN' ? null : (defaultCompany?.id || null)
+            companyId: effectiveCompanyId,
+            branchId: effectiveBranchId
           }
         }).catch(() => null);
+
+        if (user && existingDriver) {
+          await prisma.driver.update({
+            where: { id: existingDriver.id },
+            data: { userId: user.id }
+          }).catch(() => {});
+        }
       } catch (err) {
         console.warn('Demo user DB auto-creation notice:', err.message);
       }
@@ -153,14 +192,14 @@ class AuthService {
     }
 
     // 4. Attach Driver Profile & Custom Role if applicable
-    let driverProfile = null;
+    let driverProfile = existingDriver;
     let customRole = null;
 
     try {
       if (user.customRoleId && prisma.customRole) {
         customRole = await prisma.customRole.findUnique({ where: { id: user.customRoleId } }).catch(() => null);
       }
-      if (user.role === 'DRIVER' && prisma.driver) {
+      if (user.role === 'DRIVER' && !driverProfile && prisma.driver) {
         driverProfile = await prisma.driver.findFirst({
           where: { OR: [{ userId: user.id }, { email: cleanEmail }] },
           include: { currentVehicle: true }
