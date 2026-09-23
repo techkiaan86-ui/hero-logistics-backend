@@ -155,7 +155,7 @@ const resolveDriver = async (req) => {
     }).catch(() => null);
 
     if (tenantDriver) {
-      if (userId && !tenantDriver.userId) {
+      if (userId && !tenantDriver.userId && (req.user?.role === 'DRIVER' || dbUser?.role === 'DRIVER')) {
         await prisma.driver.update({
           where: { id: tenantDriver.id },
           data: { userId }
@@ -176,7 +176,7 @@ const resolveDriver = async (req) => {
   }).catch(() => null);
 
   if (anyDriver) {
-    if (userId && !anyDriver.userId) {
+    if (userId && !anyDriver.userId && (req.user?.role === 'DRIVER' || dbUser?.role === 'DRIVER')) {
       await prisma.driver.update({
         where: { id: anyDriver.id },
         data: { userId }
