@@ -506,6 +506,7 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
 exports.update = async (req, res, next) => {
   try {
     const { id } = req.params;
+    const rawLoadPaySchedule = req.body.loadPaySchedule; // capture before sanitize
     const updateData = await sanitizeDriverPayload(req.body, req.tenantId);
 
     if (req.tenantId) {
@@ -571,8 +572,9 @@ exports.update = async (req, res, next) => {
       }
     }
 
+    let data;
     try {
-      const data = await prisma.driver.update({
+      data = await prisma.driver.update({
         where,
         data: updateData,
         include: {
@@ -580,7 +582,6 @@ exports.update = async (req, res, next) => {
           manager: true
         }
       });
-      return sendSuccess(res, data);
     } catch (e) {
       if (e.code === 'P2002') {
         // Fallback retry without conflicting unique fields
@@ -591,7 +592,7 @@ exports.update = async (req, res, next) => {
             where,
             data: updateData
           });
-          return sendSuccess(res, fallbackData);
+          data = fallbackData;
         } catch (retryErr) {
           const target = Array.isArray(e.meta?.target) ? e.meta.target.join(', ') : (e.meta?.target || 'field');
           return sendError(res, {
@@ -599,8 +600,7 @@ exports.update = async (req, res, next) => {
             message: `A driver with this ${target} already exists.`
           }, HTTP_STATUS.BAD_REQUEST);
         }
-      }
-      if (e.code === 'P2025') {
+      } else if (e.code === 'P2025') {
         if (ifMatch) {
           return sendError(res, {
             code: ERROR_CODES.RESOURCE_CONFLICT,
@@ -611,13 +611,112 @@ exports.update = async (req, res, next) => {
           code: ERROR_CODES.NOT_FOUND,
           message: 'Driver not found'
         }, HTTP_STATUS.NOT_FOUND);
+      } else {
+        throw e;
       }
-      throw e;
     }
+
+    // === PayPeriod Sync: When loadPaySchedule changes, recalculate driver PayPeriod ===
+    if (rawLoadPaySchedule !== undefined && data) {
+      try {
+        let scheduleArr = [];
+        try {
+          scheduleArr = typeof rawLoadPaySchedule === 'string'
+            ? JSON.parse(rawLoadPaySchedule)
+            : (Array.isArray(rawLoadPaySchedule) ? rawLoadPaySchedule : []);
+        } catch (e) {}
+
+        // Find the selected/active route amount
+        let newScheduleAmount = 0;
+        if (Array.isArray(scheduleArr) && scheduleArr.length > 0) {
+          const selectedRoute = scheduleArr.find(r => r.isSelected) || scheduleArr[0];
+          if (selectedRoute && selectedRoute.amount) {
+            newScheduleAmount = parseFloat(selectedRoute.amount) || 0;
+          }
+        }
+
+        if (newScheduleAmount > 0) {
+          // Find any delivered loads for this driver to check if payroll sync is needed
+          const deliveredLoads = await prisma.load.findMany({
+            where: { driverId: id, status: { in: ['DELIVERED', 'COMPLETED', 'CLOSED'] } },
+            select: { id: true, notes: true }
+          }).catch(() => []);
+
+          if (deliveredLoads.length > 0) {
+            // Calculate total pay from all delivered loads using new schedule amount
+            let totalNewPay = 0;
+            deliveredLoads.forEach(ld => {
+              let loadAmt = 0;
+              // If load has explicit DRIVER_PAY tag, use that (admin override)
+              if (ld.notes && ld.notes.includes('[DRIVER_PAY:')) {
+                const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+                if (m && m[1]) loadAmt = parseFloat(m[1]);
+              }
+              // Otherwise use the new schedule amount per load
+              if (loadAmt <= 0) loadAmt = newScheduleAmount;
+              totalNewPay += loadAmt;
+            });
+
+            totalNewPay = Math.round(totalNewPay * 100) / 100;
+
+            // Update or create PayPeriod with new total
+            const existingPayPeriod = await prisma.payPeriod.findFirst({
+              where: { driverId: id, status: { in: ['DRAFT', 'PROCESSING', 'PENDING', 'APPROVED'] } },
+              orderBy: { createdAt: 'desc' }
+            }).catch(() => null);
+
+            if (existingPayPeriod) {
+              await prisma.payPeriod.update({
+                where: { id: existingPayPeriod.id },
+                data: {
+                  loadAllowance: totalNewPay,
+                  grossEarnings: totalNewPay,
+                  netPay: totalNewPay
+                }
+              }).catch(e => console.warn('PayPeriod sync on schedule update:', e?.message));
+
+              console.log(`[DriverUpdate] PayPeriod synced for driverId=${id}, newScheduleAmount=${newScheduleAmount}, totalNewPay=${totalNewPay}`);
+            } else if (data.companyId) {
+              // Create fresh PayPeriod if none exists
+              const crypto = require('crypto');
+              const periodStart = new Date();
+              periodStart.setDate(periodStart.getDate() - periodStart.getDay());
+              const periodEnd = new Date(periodStart);
+              periodEnd.setDate(periodEnd.getDate() + 13);
+
+              await prisma.payPeriod.create({
+                data: {
+                  id: crypto.randomUUID(),
+                  driverId: id,
+                  companyId: data.companyId,
+                  periodStart,
+                  periodEnd,
+                  frequency: 'FORTNIGHTLY',
+                  status: 'DRAFT',
+                  loadAllowance: totalNewPay,
+                  basePay: 0,
+                  grossEarnings: totalNewPay,
+                  paygTax: 0,
+                  superAmount: 0,
+                  totalDeductions: 0,
+                  netPay: totalNewPay
+                }
+              }).catch(e => console.warn('PayPeriod create on schedule update:', e?.message));
+            }
+          }
+        }
+      } catch (payErr) {
+        console.warn('PayPeriod sync on loadPaySchedule update:', payErr?.message);
+      }
+    }
+    // === End PayPeriod Sync ===
+
+    return sendSuccess(res, data);
   } catch (error) {
     next(error);
   }
 };
+
 
 // Delete Driver
 exports.delete = async (req, res, next) => {
