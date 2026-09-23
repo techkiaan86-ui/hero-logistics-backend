@@ -449,28 +449,34 @@ exports.getDashboard = async (req, res, next) => {
     // Until driver marks load as DELIVERED via Active Run, earnings and pricing stay at $0.00.
     let calculatedPay = 0;
     const allDeliveredLoads = driverLoads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
-    
+
     if (allDeliveredLoads.length > 0) {
+      // Always check PayPeriod first (authoritative source after admin edits)
       const dbPayPeriod = await prisma.payPeriod.findFirst({
-        where: { driverId },
+        where: { driverId, status: { in: ['DRAFT', 'PROCESSING', 'PENDING', 'APPROVED'] } },
         orderBy: { periodStart: 'desc' }
       }).catch(() => null);
 
-      if (dbPayPeriod && (dbPayPeriod.netPay || dbPayPeriod.grossEarnings)) {
+      if (dbPayPeriod && (dbPayPeriod.netPay > 0 || dbPayPeriod.grossEarnings > 0)) {
         calculatedPay = Number(dbPayPeriod.netPay || dbPayPeriod.grossEarnings || 0);
       } else {
+        // Fallback: calculate from load notes + loadPaySchedule (stop-address-aware)
         let totalLoadPay = 0;
-        const relevantLoads = completedLoads.length > 0 ? completedLoads : allDeliveredLoads;
+        const relevantLoads = allDeliveredLoads;
 
-        let scheduleRates = {};
+        let scheduleRates = [];
         if (driver?.loadPaySchedule) {
           try {
             const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
             if (Array.isArray(parsed)) {
               parsed.forEach(item => {
-                if (item.isSelected !== false && item.amount) {
-                  const destKey = (item.deliveryLocation || '').trim().toLowerCase();
-                  if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+                if (item.amount && parseFloat(item.amount) > 0) {
+                  scheduleRates.push({
+                    pickup: (item.pickupLocation || '').trim().toLowerCase(),
+                    delivery: (item.deliveryLocation || '').trim().toLowerCase(),
+                    amount: parseFloat(item.amount),
+                    isSelected: item.isSelected !== false
+                  });
                 }
               });
             }
@@ -479,19 +485,43 @@ exports.getDashboard = async (req, res, next) => {
 
         relevantLoads.forEach(ld => {
           let loadAmt = 0;
+          // 1. Highest priority: DRIVER_PAY tag in notes (set by admin via updateLoad)
           if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
             const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
             if (m && m[1]) loadAmt = parseFloat(m[1]);
           }
-          if (loadAmt <= 0 && (ld.destination || ld.deliveryLocation)) {
+          // 2. Match against stop addresses in loadPaySchedule
+          if (loadAmt <= 0 && scheduleRates.length > 0 && Array.isArray(ld.stops)) {
+            const pickupStop = ld.stops.find(s => s.type === 'PICKUP') || ld.stops[0];
+            const dropStop = ld.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || ld.stops[ld.stops.length - 1];
+            const pickupAddr = (pickupStop?.address || '').trim().toLowerCase();
+            const dropAddr = (dropStop?.address || '').trim().toLowerCase();
+
+            for (const sr of scheduleRates) {
+              const pickupMatch = !sr.pickup || pickupAddr.includes(sr.pickup) || sr.pickup.includes(pickupAddr.split(',')[0]);
+              const deliveryMatch = !sr.delivery || dropAddr.includes(sr.delivery) || sr.delivery.includes(dropAddr.split(',')[0]);
+              if (pickupMatch && deliveryMatch) {
+                loadAmt = sr.amount;
+                break;
+              }
+            }
+            // fallback: selected route rate
+            if (loadAmt <= 0) {
+              const selected = scheduleRates.find(sr => sr.isSelected) || scheduleRates[0];
+              if (selected) loadAmt = selected.amount;
+            }
+          }
+          // 3. Legacy: destination/deliveryLocation field match
+          if (loadAmt <= 0 && scheduleRates.length > 0 && (ld.destination || ld.deliveryLocation)) {
             const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
-            for (const [k, v] of Object.entries(scheduleRates)) {
-              if (dKey.includes(k) || k.includes(dKey)) {
-                loadAmt = v;
+            for (const sr of scheduleRates) {
+              if (sr.delivery && (dKey.includes(sr.delivery) || sr.delivery.includes(dKey))) {
+                loadAmt = sr.amount;
                 break;
               }
             }
           }
+          // 4. Fallback to driver payRate
           if (loadAmt <= 0 && parseFloat(driver?.payRate) > 0) {
             loadAmt = parseFloat(driver.payRate);
           }

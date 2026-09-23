@@ -317,9 +317,11 @@ exports.updateLoad = async (req, res, next) => {
       else delete payload.priority;
     }
 
-    // Extract stops and items before cleaning
+    // Extract stops, items, and driverPay before cleaning
     const stops = payload.stops;
     const items = payload.items;
+    const newDriverPay = payload.driverPay ? parseFloat(payload.driverPay) : null;
+
     delete payload.stops;
     delete payload.items;
 
@@ -362,6 +364,14 @@ exports.updateLoad = async (req, res, next) => {
     if (!payload.truckId) delete payload.truckId;
     if (!payload.trailerId) delete payload.trailerId;
     if (!payload.branchId) delete payload.branchId;
+
+    // If driverPay changed, update the notes to reflect new DRIVER_PAY value
+    if (newDriverPay !== null && newDriverPay > 0) {
+      const baseNotes = (payload.notes || targetLoad.notes || '')
+        .replace(/\[DRIVER_PAY:[^\]]+\]/g, '')
+        .trim();
+      payload.notes = `${baseNotes} [DRIVER_PAY:${newDriverPay}]`.trim();
+    }
 
     // Handle nested relation updates for stops
     if (Array.isArray(stops)) {
@@ -410,7 +420,7 @@ exports.updateLoad = async (req, res, next) => {
       include: { driver: true, truck: true, trailer: true, customer: true, stops: true, items: true }
     });
 
-    // P0 requirement: When transitioned to DELIVERED or COMPLETED, automatically credit driver payroll and generate draft invoice
+    // P0: When transitioning to DELIVERED or COMPLETED, auto-credit payroll
     if (payload.status === 'DELIVERED' || payload.status === 'COMPLETED') {
       try {
         await exports.autoGenerateLoadInvoice(data.id, data.companyId);
@@ -422,9 +432,51 @@ exports.updateLoad = async (req, res, next) => {
       }
     }
 
+    // P1: If driverPay changed and load is ALREADY delivered, recalculate driver PayPeriod
+    const isAlreadyDelivered = ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(targetLoad.status);
+    const effectiveDriverId = (payload.driverId || targetLoad.driverId);
+    if (newDriverPay !== null && newDriverPay > 0 && isAlreadyDelivered && effectiveDriverId) {
+      try {
+        const payPeriod = await prisma.payPeriod.findFirst({
+          where: {
+            driverId: effectiveDriverId,
+            status: { in: ['DRAFT', 'PROCESSING', 'PENDING'] }
+          },
+          orderBy: { createdAt: 'desc' }
+        }).catch(() => null);
+
+        if (payPeriod) {
+          // Recalculate: subtract old pay (from notes) and add new pay
+          let oldPay = 0;
+          const oldNotes = targetLoad.notes || '';
+          const oldPayMatch = oldNotes.match(/\[DRIVER_PAY:([0-9.]+)/);
+          if (oldPayMatch && oldPayMatch[1]) oldPay = parseFloat(oldPayMatch[1]);
+
+          const currentLoadAllowance = parseFloat(payPeriod.loadAllowance || 0);
+          const adjustment = newDriverPay - oldPay;
+          const newLoadAllowance = Math.max(0, currentLoadAllowance + adjustment);
+          const newGross = Math.round((newLoadAllowance + parseFloat(payPeriod.basePay || 0) + parseFloat(payPeriod.distanceAllow || 0) + parseFloat(payPeriod.otherAllowance || 0) + parseFloat(payPeriod.bonuses || 0)) * 100) / 100;
+
+          await prisma.payPeriod.update({
+            where: { id: payPeriod.id },
+            data: {
+              loadAllowance: newLoadAllowance,
+              grossEarnings: newGross,
+              netPay: newGross
+            }
+          }).catch(e => console.warn('PayPeriod update on driverPay change:', e?.message));
+
+          console.log(`[updateLoad] PayPeriod updated: driverId=${effectiveDriverId}, oldPay=${oldPay}, newPay=${newDriverPay}, adjustment=${adjustment}`);
+        }
+      } catch (payErr) {
+        console.warn('PayPeriod sync on driverPay change:', payErr?.message);
+      }
+    }
+
     return sendSuccess(res, data);
   } catch (error) { next(error); }
 };
+
 
 exports.deleteLoad = async (req, res, next) => {
   try {
