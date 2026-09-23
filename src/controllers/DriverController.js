@@ -276,9 +276,9 @@ exports.create = async (req, res, next) => {
         const bcrypt = require('bcryptjs');
         const cleanDrvEmail = driverData.email.toLowerCase().trim();
         let linkedUser = await prisma.user.findFirst({ where: { email: cleanDrvEmail } });
-        const rawPass = payload.password || payload.Password || '123456';
-        const passHash = await bcrypt.hash(rawPass, 10);
         if (!linkedUser) {
+          const rawPass = payload.password || payload.Password || '123456';
+          const passHash = await bcrypt.hash(rawPass, 10);
           linkedUser = await prisma.user.create({
             data: {
               email: cleanDrvEmail,
@@ -290,22 +290,12 @@ exports.create = async (req, res, next) => {
               branchId: driverData.branchId || null
             }
           });
-        } else {
-          await prisma.user.update({
-            where: { id: linkedUser.id },
-            data: {
-              role: 'DRIVER',
-              password: passHash,
-              companyId: driverData.companyId || linkedUser.companyId,
-              branchId: driverData.branchId || linkedUser.branchId
-            }
-          }).catch(() => {});
         }
         if (linkedUser) {
           driverData.userId = linkedUser.id;
         }
       } catch (uErr) {
-        console.warn('Could not auto-create/update user during driver creation:', uErr.message);
+        console.warn('Could not auto-create user during driver creation:', uErr.message);
       }
     }
 
@@ -538,6 +528,39 @@ exports.update = async (req, res, next) => {
       }
     }
 
+    // Check existing driver for user linking
+    const existingDriver = await prisma.driver.findUnique({ where: { id } });
+
+    // Sync linked user email if email changed
+    if (updateData.email && existingDriver?.email && updateData.email.toLowerCase().trim() !== existingDriver.email.toLowerCase().trim()) {
+      try {
+        await prisma.user.updateMany({
+          where: { email: existingDriver.email.toLowerCase().trim() },
+          data: { email: updateData.email.toLowerCase().trim() }
+        });
+      } catch (uErr) {
+        console.warn('Could not sync user email on driver update:', uErr.message);
+      }
+    }
+
+    // Sync password if reset password was provided
+    const rawPassword = req.body.Password || req.body.password || req.body.ResetPassword || req.body.resetPassword;
+    if (rawPassword && typeof rawPassword === 'string' && rawPassword.trim().length > 0) {
+      try {
+        const bcrypt = require('bcryptjs');
+        const passHash = await bcrypt.hash(rawPassword.trim(), 10);
+        const targetEmail = (updateData.email || existingDriver?.email || '').toLowerCase().trim();
+        if (targetEmail) {
+          await prisma.user.updateMany({
+            where: { email: targetEmail },
+            data: { password: passHash }
+          });
+        }
+      } catch (pErr) {
+        console.warn('Could not sync user password on driver update:', pErr.message);
+      }
+    }
+
     // Check for duplicate driverCode and email before updating
     if (updateData.driverCode) {
       const duplicateCode = await prisma.driver.findFirst({
@@ -720,69 +743,6 @@ exports.update = async (req, res, next) => {
       }
     }
     // === End PayPeriod Sync ===
-
-    // === User Account Sync for Driver ===
-    if (data && data.email) {
-      try {
-        const bcrypt = require('bcryptjs');
-        const cleanDrvEmail = data.email.toLowerCase().trim();
-        let linkedUser = null;
-        if (data.userId) {
-          linkedUser = await prisma.user.findUnique({ where: { id: data.userId } }).catch(() => null);
-        }
-        if (!linkedUser) {
-          linkedUser = await prisma.user.findFirst({ where: { email: cleanDrvEmail } }).catch(() => null);
-        }
-
-        const drvName = `${data.firstName || ''} ${data.lastName || ''}`.trim() || 'Driver';
-        const rawPass = req.body.password || req.body.Password || '123456';
-        const passHash = await bcrypt.hash(rawPass, 10);
-
-        if (linkedUser) {
-          await prisma.user.update({
-            where: { id: linkedUser.id },
-            data: {
-              email: cleanDrvEmail,
-              name: drvName,
-              role: 'DRIVER',
-              companyId: data.companyId || linkedUser.companyId,
-              branchId: data.branchId || linkedUser.branchId,
-              ...(req.body.password || req.body.Password ? { password: passHash } : {})
-            }
-          }).catch(() => {});
-
-          if (data.userId !== linkedUser.id) {
-            await prisma.driver.update({
-              where: { id: data.id },
-              data: { userId: linkedUser.id }
-            }).catch(() => {});
-          }
-        } else {
-          // Create User login account for driver
-          const newUser = await prisma.user.create({
-            data: {
-              email: cleanDrvEmail,
-              name: drvName,
-              password: passHash,
-              role: 'DRIVER',
-              status: 'ACTIVE',
-              companyId: data.companyId || null,
-              branchId: data.branchId || null
-            }
-          }).catch(() => null);
-
-          if (newUser) {
-            await prisma.driver.update({
-              where: { id: data.id },
-              data: { userId: newUser.id }
-            }).catch(() => {});
-          }
-        }
-      } catch (uSyncErr) {
-        console.warn('Could not sync user account on driver update:', uSyncErr?.message);
-      }
-    }
-    // === End User Account Sync ===
 
     return sendSuccess(res, data);
   } catch (error) {
