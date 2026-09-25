@@ -242,6 +242,18 @@ exports.create = async (req, res, next) => {
       // 5. Payroll Information
       payType: payload.payType || payload.PayType || 'Hourly',
       payRate: (payload.payRate || payload.PayRate) ? parseFloat(payload.payRate || payload.PayRate) : null,
+      ordinaryHoursPerDay: payload.ordinaryHoursPerDay ? parseFloat(payload.ordinaryHoursPerDay) : 7.6,
+      overtimeStartsAfter: payload.overtimeStartsAfter ? parseFloat(payload.overtimeStartsAfter) : 7.6,
+      overtimeRate: payload.overtimeRate ? parseFloat(payload.overtimeRate) : null,
+      overtimeMultiplier: payload.overtimeMultiplier ? parseFloat(payload.overtimeMultiplier) : 1.5,
+      taxFreeThreshold: payload.taxFreeThreshold !== undefined ? (payload.taxFreeThreshold === true || payload.taxFreeThreshold === 'Yes' || payload.taxFreeThreshold === 'true') : true,
+      studyLoanDebt: payload.studyLoanDebt !== undefined ? (payload.studyLoanDebt === true || payload.studyLoanDebt === 'Yes' || payload.studyLoanDebt === 'true') : false,
+      taxDeclReceived: payload.taxDeclReceived !== undefined ? (payload.taxDeclReceived === true || payload.taxDeclReceived === 'Yes' || payload.taxDeclReceived === 'true') : true,
+      residencyStatus: payload.residencyStatus || 'Australian Resident',
+      paygCalcMethod: payload.paygCalcMethod || 'ATO Scale',
+      superPercentage: payload.superPercentage ? parseFloat(payload.superPercentage) : 12.0,
+      effectiveFrom: payload.effectiveFrom ? new Date(payload.effectiveFrom) : null,
+      effectiveTo: payload.effectiveTo ? new Date(payload.effectiveTo) : null,
       loadPaySchedule: typeof payload.loadPaySchedule === 'object' ? JSON.stringify(payload.loadPaySchedule) : (payload.loadPaySchedule || null),
       bankName: payload.bankName || payload.BankName || null,
       accountNumber: payload.accountNumber || payload.AccountNumber || null,
@@ -421,6 +433,18 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
     const pr = rawPayload.payRate !== undefined ? rawPayload.payRate : rawPayload.PayRate;
     data.payRate = pr !== null && pr !== '' ? parseFloat(pr) : null;
   }
+  if (rawPayload.ordinaryHoursPerDay !== undefined) data.ordinaryHoursPerDay = parseFloat(rawPayload.ordinaryHoursPerDay) || 7.6;
+  if (rawPayload.overtimeStartsAfter !== undefined) data.overtimeStartsAfter = parseFloat(rawPayload.overtimeStartsAfter) || 7.6;
+  if (rawPayload.overtimeRate !== undefined) data.overtimeRate = rawPayload.overtimeRate !== null && rawPayload.overtimeRate !== '' ? parseFloat(rawPayload.overtimeRate) : null;
+  if (rawPayload.overtimeMultiplier !== undefined) data.overtimeMultiplier = parseFloat(rawPayload.overtimeMultiplier) || 1.5;
+  if (rawPayload.taxFreeThreshold !== undefined) data.taxFreeThreshold = rawPayload.taxFreeThreshold === true || rawPayload.taxFreeThreshold === 'Yes' || rawPayload.taxFreeThreshold === 'true';
+  if (rawPayload.studyLoanDebt !== undefined) data.studyLoanDebt = rawPayload.studyLoanDebt === true || rawPayload.studyLoanDebt === 'Yes' || rawPayload.studyLoanDebt === 'true';
+  if (rawPayload.taxDeclReceived !== undefined) data.taxDeclReceived = rawPayload.taxDeclReceived === true || rawPayload.taxDeclReceived === 'Yes' || rawPayload.taxDeclReceived === 'true';
+  if (rawPayload.residencyStatus !== undefined) data.residencyStatus = rawPayload.residencyStatus || 'Australian Resident';
+  if (rawPayload.paygCalcMethod !== undefined) data.paygCalcMethod = rawPayload.paygCalcMethod || 'ATO Scale';
+  if (rawPayload.superPercentage !== undefined) data.superPercentage = parseFloat(rawPayload.superPercentage) || 12.0;
+  if (rawPayload.effectiveFrom !== undefined) data.effectiveFrom = rawPayload.effectiveFrom ? new Date(rawPayload.effectiveFrom) : null;
+  if (rawPayload.effectiveTo !== undefined) data.effectiveTo = rawPayload.effectiveTo ? new Date(rawPayload.effectiveTo) : null;
   if (rawPayload.loadPaySchedule !== undefined) {
     data.loadPaySchedule = typeof rawPayload.loadPaySchedule === 'object' ? JSON.stringify(rawPayload.loadPaySchedule) : (rawPayload.loadPaySchedule || null);
   }

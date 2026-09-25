@@ -114,6 +114,16 @@ exports.create = async (req, res, next) => {
         data: { status: 'DELIVERED', deliveryEta: new Date() }
       }).catch(() => null);
 
+      // Auto-credit Driver Payroll
+      if (data.driverId || data.load?.driverId) {
+        try {
+          const { autoCreditDriverPayroll } = require('./CompanyAdminPortalController');
+          await autoCreditDriverPayroll(data.loadId, data.driverId || data.load?.driverId, data.load?.companyId);
+        } catch (payErr) {
+          console.warn('POD autoCreditDriverPayroll catch:', payErr?.message);
+        }
+      }
+
       // 2. Prevent duplicate invoice creation: check if draft/invoice for load exists
       const existingInvoice = await prisma.customerInvoice.findFirst({
         where: { loadId: data.loadId }

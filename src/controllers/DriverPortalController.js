@@ -3,6 +3,7 @@ const prisma = require('../utils/prismaClient');
 const { sendSuccess, sendError } = require('../utils/apiResponse');
 const { HTTP_STATUS, ERROR_CODES } = require('../config/constants');
 const { saveBase64Image } = require('../utils/fileStorage');
+const companyCtrl = require('./CompanyAdminPortalController');
 
 /**
  * Helper to resolve the driver record for the request
@@ -511,15 +512,27 @@ exports.getDashboard = async (req, res, next) => {
               if (selected) loadAmt = selected.amount;
             }
           }
-          // 3. Legacy: destination/deliveryLocation field match
-          if (loadAmt <= 0 && scheduleRates.length > 0 && (ld.destination || ld.deliveryLocation)) {
-            const dKey = String(ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
-            for (const sr of scheduleRates) {
-              if (sr.delivery && (dKey.includes(sr.delivery) || sr.delivery.includes(dKey))) {
-                loadAmt = sr.amount;
-                break;
+          // 3. Match against Company-wide Load Pay Schedules (managed in Company → Payroll)
+          if (loadAmt <= 0) {
+            try {
+              const store = companyCtrl.driverLoadScheduleStore || {};
+              const companySchedules = store[companyId] || store['default'] || [];
+              if (Array.isArray(companySchedules) && companySchedules.length > 0) {
+                const pickupStop = ld.stops?.find(s => s.type === 'PICKUP') || ld.stops?.[0];
+                const dropStop = ld.stops?.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || ld.stops?.[ld.stops.length - 1];
+                const pAddr = (pickupStop?.address || ld.origin || '').trim().toLowerCase();
+                const dAddr = (dropStop?.address || ld.destination || ld.deliveryLocation || '').trim().toLowerCase();
+
+                for (const cSched of companySchedules) {
+                  const orig = (cSched.origin || '').trim().toLowerCase();
+                  const dest = (cSched.destination || '').trim().toLowerCase();
+                  if (orig && dest && pAddr.includes(orig) && dAddr.includes(dest)) {
+                    loadAmt = parseFloat(cSched.rate || cSched.amount || 0);
+                    break;
+                  }
+                }
               }
-            }
+            } catch (e) {}
           }
           // 4. Fallback to driver payRate
           if (loadAmt <= 0 && parseFloat(driver?.payRate) > 0) {
@@ -663,7 +676,7 @@ exports.getDashboard = async (req, res, next) => {
 // ============================================================================
 // 2. UPDATE DRIVER DUTY STATUS
 // ============================================================================
-exports.updateStatus = async (req, res, next) => {
+exports.updateDutyStatus = async (req, res, next) => {
   try {
     const { status } = req.body;
     if (!status) {
@@ -1591,20 +1604,33 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
     const driver = await resolveDriver(req);
     if (!driver) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
     const { loadId, mode, notes, signature, photos } = req.body;
+    let targetLoadId = loadId;
+
+    if (!targetLoadId && driver) {
+      const activeLoad = await prisma.load.findFirst({
+        where: {
+          driverId: driver.id,
+          status: { in: ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'] }
+        },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null);
+      if (activeLoad) targetLoadId = activeLoad.id;
+    }
+
     const signaturePath = signature ? saveBase64Image(signature, 'signatures') : null;
 
-    if (loadId && prisma.load) {
+    if (targetLoadId && prisma.load) {
       await prisma.load.updateMany({
-        where: { id: loadId, driverId: driver.id },
+        where: { id: targetLoadId },
         data: { status: 'DELIVERED', dispatchNotes: notes || undefined }
       }).catch(() => null);
     }
 
-    if (driver && loadId && prisma.deliveryPOD) {
+    if (driver && targetLoadId && prisma.deliveryPOD) {
       await prisma.deliveryPOD.create({
         data: {
           driverId: driver.id,
-          loadId: loadId,
+          loadId: targetLoadId,
           signeeName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
           signatureUrl: signaturePath,
           deliveryNotes: notes || 'Delivery completed'
@@ -1616,7 +1642,7 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
       await prisma.proofOfDelivery.create({
         data: {
           driverId: driver.id,
-          loadId: loadId || undefined,
+          loadId: targetLoadId || undefined,
           recipientName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
           signatureUrl: signaturePath,
           photoUrls: photos ? JSON.stringify(photos) : null,
@@ -1626,17 +1652,17 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
       }).catch(() => null);
     }
 
-    // P0 Requirement: Auto-generate CustomerInvoice DRAFT upon POD completion
+    // P0 Requirement: Auto-generate CustomerInvoice DRAFT & Credit Driver Payroll upon POD completion
     let autoInvoice = null;
     let autoPayroll = null;
-    if (loadId) {
+    if (targetLoadId) {
       try {
         const { autoGenerateLoadInvoice, autoCreditDriverPayroll } = require('./CompanyAdminPortalController');
         if (typeof autoGenerateLoadInvoice === 'function') {
-          autoInvoice = await autoGenerateLoadInvoice(loadId, driver.companyId);
+          autoInvoice = await autoGenerateLoadInvoice(targetLoadId, driver.companyId);
         }
         if (typeof autoCreditDriverPayroll === 'function' && driver?.id) {
-          autoPayroll = await autoCreditDriverPayroll(loadId, driver.id, driver.companyId);
+          autoPayroll = await autoCreditDriverPayroll(targetLoadId, driver.id, driver.companyId);
         }
       } catch (invErr) {
         console.warn('Auto financial generation catch:', invErr?.message);
@@ -3616,179 +3642,7 @@ exports.clearStorageCache = async (req, res, next) => {
   }
 };
 
-// ============================================================================
-// 22. GET DRIVER DOCUMENTS & COMPLIANCE DATA
-// ============================================================================
-exports.getDriverDocuments = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    const driverId = driver?.id || '';
 
-    const [dbDocs, dbVehicle, dbLoad, dbActivities] = await Promise.all([
-      prisma.document ? prisma.document.findMany({
-        where: driver?.id ? { driverId: driver.id } : {},
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => []) : [],
-      driver?.id && prisma.vehicle ? prisma.vehicle.findFirst({
-        where: { currentDriverId: driver.id },
-        include: { documents: true }
-      }).catch(() => null) : Promise.resolve(null),
-      driver?.id && prisma.load ? prisma.load.findFirst({
-        where: { driverId: driver.id, status: { in: ['IN_TRANSIT', 'DISPATCHED', 'ASSIGNED'] } },
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => null) : Promise.resolve(null),
-      driver?.id && prisma.driverActivity ? prisma.driverActivity.findMany({
-        where: { driverId: driver.id, category: { in: ['Compliance', 'Status', 'Audit'] } },
-        orderBy: { createdAt: 'desc' },
-        take: 6
-      }).catch(() => []) : []
-    ]);
-
-    // Format Driver Documents
-    let documents = [];
-    if (dbDocs && dbDocs.length > 0) {
-      documents = dbDocs.map(d => {
-        let status = 'Valid';
-        let statusColor = 'bg-emerald-50 text-emerald-700 border-emerald-200';
-        let expiryStr = 'Never';
-
-        if (d.expiryDate) {
-          const exp = new Date(d.expiryDate);
-          const now = new Date();
-          const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
-
-          expiryStr = exp.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
-          if (daysLeft < 0) {
-            status = 'Expired';
-            statusColor = 'bg-rose-50 text-rose-700 border-rose-200';
-          } else if (daysLeft <= 30) {
-            status = 'Expiring Soon';
-            statusColor = 'bg-amber-50 text-amber-700 border-amber-200';
-          }
-        }
-
-        const iconMap = {
-          'Heavy Vehicle Driver Licence': '🪪',
-          'Dangerous Goods (DG) Licence': '☣️',
-          'Commercial Driver Medical': '🩺',
-          'Basic Fatigue Management (BFM)': '⏱️',
-          'Forklift Licence (LF)': '🚜',
-          'National Police Check': '🛡️'
-        };
-
-        return {
-          id: d.id,
-          name: d.type || 'Driver Document',
-          expiry: expiryStr,
-          status,
-          statusColor,
-          icon: iconMap[d.type] || '📄',
-          fileUrl: d.fileUrl || ''
-        };
-      });
-    }
-
-    // Format Vehicle Documents - from DB only
-    const vehicleDocs = [];
-
-    // Format Compliance History - from DB only
-    let complianceHistory = [];
-    if (dbActivities && dbActivities.length > 0) {
-      complianceHistory = dbActivities.map(a => ({
-        title: a.title,
-        date: a.date || new Date(a.createdAt).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }),
-        status: a.status === 'Completed' ? 'Approved' : (a.status === 'Verified' ? 'Approved' : 'Pending')
-      }));
-    }
-
-    // Vehicle Metadata - from DB only
-    const vehicle = dbVehicle ? {
-      truck: dbVehicle.rego || dbVehicle.plate || null,
-      truckModel: `${dbVehicle.make || ''} ${dbVehicle.model || ''}`.trim() || null,
-      trailer: null,
-      trailerType: null
-    } : null;
-
-    // Active Load Metadata - from DB only
-    const activeLoad = dbLoad ? {
-      id: dbLoad.loadNumber || dbLoad.loadRef || null,
-      origin: dbLoad.origin || dbLoad.pickupAddress || null,
-      destination: dbLoad.destination || dbLoad.deliveryAddress || null,
-      startDate: dbLoad.createdAt ? new Date(dbLoad.createdAt).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }) : null,
-      estFinish: null,
-      status: dbLoad.status === 'IN_TRANSIT' ? 'En Route' : 'Assigned',
-      poNumber: dbLoad.loadRef || null,
-      loadType: dbLoad.type || null
-    } : null;
-
-    return sendSuccess(res, {
-      documents,
-      vehicleDocs,
-      complianceHistory,
-      vehicle,
-      activeLoad
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ============================================================================
-// 23. UPLOAD DRIVER DOCUMENT
-// ============================================================================
-exports.uploadDriverDocument = async (req, res, next) => {
-  try {
-    const { name, category, expiryDate, fileUrl } = req.body;
-    if (!name) {
-      return sendError(res, { code: 'VALIDATION_ERROR', message: 'Document name is required' }, 400);
-    }
-
-    const driver = await resolveDriver(req);
-
-    let createdDoc = null;
-    if (driver && prisma.document) {
-      createdDoc = await prisma.document.create({
-        data: {
-          type: name,
-          fileUrl: fileUrl || '/documents/uploaded-doc.pdf',
-          expiryDate: expiryDate ? new Date(expiryDate) : null,
-          driverId: driver.id
-        }
-      }).catch(err => {
-        console.warn('Prisma document create fallback:', err?.message);
-        return null;
-      });
-    }
-
-    if (driver && prisma.driverActivity) {
-      await prisma.driverActivity.create({
-        data: {
-          driverId: driver.id,
-          title: `Uploaded: ${name}`,
-          category: 'Compliance',
-          status: 'Completed',
-          description: `Uploaded document ${name} (${category || 'General'})`,
-          performedBy: `${driver.firstName || ''} ${driver.lastName || ''}`.trim() || 'Driver',
-          date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-        }
-      }).catch(() => null);
-    }
-
-    return sendSuccess(res, {
-      message: 'Document uploaded successfully',
-      document: createdDoc || {
-        id: `doc-${Date.now()}`,
-        name,
-        expiry: expiryDate ? new Date(expiryDate).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Never',
-        status: 'Uploaded',
-        statusColor: 'bg-blue-50 text-blue-700 border-blue-200',
-        icon: '📄'
-      }
-    }, HTTP_STATUS.CREATED);
-  } catch (error) {
-    next(error);
-  }
-};
 
 // ============================================================================
 // ALIAS EXPORTS FOR DRIVER PORTAL ROUTE COMPATIBILITY
@@ -3899,418 +3753,7 @@ exports.markAllNotificationsRead = async (req, res, next) => {
 
 
 
-// --- Phase 1: Driver Dashboard Cleanup Routes ---
 exports.getPayroll = exports.getPayrollData;
-
-// Driver portal auxiliary methods
-exports.getTimesheets = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    const timesheets = await prisma.timesheet.findMany({
-      where: driver ? { driverId: driver.id } : {},
-      orderBy: { createdAt: 'desc' },
-      take: 20
-    }).catch(() => []);
-    return sendSuccess(res, { timesheets });
-  } catch (error) { next(error); }
-};
-
-exports.clockInOut = async (req, res, next) => {
-  try {
-    return sendSuccess(res, { success: true, message: 'Clock status updated successfully' });
-  } catch (error) { next(error); }
-};
-
-exports.addPickupItem = async (req, res, next) => {
-  try {
-    const { loadId, vin, makeModel, plate, drop } = req.body;
-    let item = null;
-    if (prisma.loadItem) {
-      item = await prisma.loadItem.create({
-        data: {
-          loadId: loadId || undefined,
-          vin: vin || 'VIN-UNKNOWN',
-          description: makeModel || 'Vehicle',
-          rego: plate || 'TEMP-99',
-          category: drop || 'DROP 1',
-          status: 'PENDING'
-        }
-      }).catch(() => null);
-    }
-    return sendSuccess(res, { item: item || { id: Date.now(), vin, makeModel, plate, drop } });
-  } catch (error) { next(error); }
-};
-
-exports.updatePickupItem = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { makeModel, vin, plate, drop } = req.body;
-    if (prisma.loadItem && id) {
-      await prisma.loadItem.update({
-        where: { id },
-        data: { description: makeModel, vin, rego: plate, category: drop }
-      }).catch(() => null);
-    }
-    return sendSuccess(res, { success: true });
-  } catch (error) { next(error); }
-};
-
-exports.deletePickupItem = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    if (prisma.loadItem && id) {
-      await prisma.loadItem.delete({ where: { id } }).catch(() => null);
-    }
-    return sendSuccess(res, { success: true });
-  } catch (error) { next(error); }
-};
-
-exports.scanVinCode = async (req, res, next) => {
-  try {
-    const { vin } = req.body;
-    return sendSuccess(res, { assigned: true, vin });
-  } catch (error) { next(error); }
-};
-
-exports.confirmPickupLoad = async (req, res, next) => {
-  try {
-    const { loadId } = req.body;
-    if (prisma.load && loadId) {
-      await prisma.load.update({
-        where: { id: loadId },
-        data: { status: 'IN_TRANSIT' }
-      }).catch(() => null);
-    }
-    return sendSuccess(res, { success: true, status: 'IN_TRANSIT' });
-  } catch (error) { next(error); }
-};
-
-// ============================================================================
-// ACTIVE RUN & PAYROLL CONTROLLER FUNCTIONS
-// ============================================================================
-
-exports.getActiveRun = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    if (!driver) {
-      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
-    }
-
-    const driverId = driver.id;
-    const loads = await prisma.load.findMany({
-      where: { driverId },
-      include: {
-        truck: true,
-        trailer: true,
-        items: true,
-        stops: true,
-        expenses: true
-      },
-      orderBy: { createdAt: 'desc' }
-    }).catch(() => []);
-
-    let activeLoad = loads.find(l => ['IN_TRANSIT', 'DISPATCHED', 'ASSIGNED', 'ACTIVE', 'PENDING'].includes(l.status)) || loads[0];
-
-    if (!activeLoad) {
-      return sendSuccess(res, { run: null, message: 'No active run found' });
-    }
-
-    let origin = activeLoad.origin || (activeLoad.pickupAddress ? activeLoad.pickupAddress.split(',')[0].trim() : null);
-    let destination = activeLoad.destination || (activeLoad.deliveryAddress ? activeLoad.deliveryAddress.split(',')[0].trim() : null);
-    let originAddress = activeLoad.pickupAddress || 'Sydney Metro Hub-demo, NSW';
-    let destinationAddress = activeLoad.deliveryAddress || 'Central Warehouse-Company, NSW';
-    let pickupTime = activeLoad.pickupTime || '08:00 AM';
-    let estFinish = activeLoad.deliveryTime || (activeLoad.deliveryEta ? new Date(activeLoad.deliveryEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '02:30 PM');
-
-    if (Array.isArray(activeLoad.stops) && activeLoad.stops.length > 0) {
-      const pStop = activeLoad.stops.find(s => s.type === 'PICKUP') || activeLoad.stops[0];
-      const dStop = activeLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || activeLoad.stops[activeLoad.stops.length - 1];
-      if (pStop) {
-        if (pStop.address) {
-          originAddress = pStop.address;
-          if (!origin || origin.toLowerCase() === 'ggg') {
-            origin = pStop.address.split(',')[0]?.trim();
-          }
-        }
-        if (!origin || origin.toLowerCase() === 'ggg') {
-          origin = pStop.locationName || pStop.city || 'Sydney Metro Hub-demo';
-        }
-        if (pStop.estimatedTime || pStop.time) pickupTime = pStop.estimatedTime || pStop.time;
-      }
-      if (dStop) {
-        if (dStop.address) {
-          destinationAddress = dStop.address;
-          if (!destination || destination.toLowerCase() === 'asdff') {
-            destination = dStop.address.split(',')[0]?.trim();
-          }
-        }
-        if (!destination || destination.toLowerCase() === 'asdff') {
-          destination = dStop.locationName || dStop.city || 'Central Warehouse-Company';
-        }
-        if (dStop.estimatedTime || dStop.time) estFinish = dStop.estimatedTime || dStop.time;
-      }
-    }
-
-    if (!origin || origin.toLowerCase() === 'ggg') origin = 'Sydney Metro Hub-demo';
-    if (!destination || destination.toLowerCase() === 'asdff') destination = 'Central Warehouse-Company';
-
-    const totalCars = Array.isArray(activeLoad.items) && activeLoad.items.length > 0 ? activeLoad.items.length : 1;
-    const pickedUpCount = Array.isArray(activeLoad.items) ? activeLoad.items.filter(i => i.status === 'LOADED' || i.status === 'PICKED_UP' || i.status === 'DELIVERED').length : totalCars;
-    const deliveredCount = Array.isArray(activeLoad.items) ? activeLoad.items.filter(i => i.status === 'DELIVERED').length : (['DELIVERED', 'COMPLETED'].includes(activeLoad.status) ? totalCars : 0);
-
-    const isDispatched = ['DISPATCHED', 'IN_TRANSIT'].includes(activeLoad.status);
-
-    const loadNumber = activeLoad.loadNumber || activeLoad.loadRef || activeLoad.draftId || `PO-${activeLoad.id.slice(0, 6).toUpperCase()}`;
-
-    const formattedRun = {
-      id: loadNumber,
-      dbId: activeLoad.id,
-      loadNumber: loadNumber,
-      origin: origin || 'Sydney Metro Hub-demo',
-      originAddress: originAddress || 'Sydney Metro Hub-demo, NSW',
-      destination: destination || 'Central Warehouse-Company',
-      destinationAddress: destinationAddress || 'Central Warehouse-Company, NSW',
-      startTime: pickupTime,
-      pickupTime: pickupTime,
-      finishTime: estFinish,
-      estFinish: estFinish,
-      stopsCount: Array.isArray(activeLoad.stops) && activeLoad.stops.length > 0 ? activeLoad.stops.length : 2,
-      totalCarsCount: totalCars,
-      pickedUpCount: pickedUpCount,
-      deliveredCount: deliveredCount,
-      isDispatched: isDispatched,
-      status: activeLoad.status === 'IN_TRANSIT' ? 'In Transit' : (activeLoad.status === 'DISPATCHED' ? 'Dispatched' : (['DELIVERED', 'COMPLETED'].includes(activeLoad.status) ? 'Delivered' : 'Picked Up')),
-      vehicle: {
-        truck: activeLoad.truck ? `${activeLoad.truck.rego || activeLoad.truck.plate} | ${activeLoad.truck.make || ''} ${activeLoad.truck.model || ''}` : 'MAN TGX 26.580',
-        trailer: activeLoad.trailer ? (activeLoad.trailer.rego || activeLoad.trailer.plate) : 'TRL-205',
-        loadType: activeLoad.type || 'General Freight'
-      },
-      items: Array.isArray(activeLoad.items) && activeLoad.items.length > 0 ? activeLoad.items.map(item => ({
-        id: item.id,
-        vin: item.vin || 'VIN-948192',
-        makeModel: item.description || item.makeModel || 'Vehicle',
-        status: item.status || 'LOADED'
-      })) : [
-        { id: '1', vin: 'VIN-948192', makeModel: 'Toyota Camry 2024 (White)', status: 'LOADED' }
-      ]
-    };
-
-    return sendSuccess(res, { run: formattedRun, load: activeLoad });
-  } catch (error) {
-    next(error);
-  }
-};
-
-exports.getPayrollData = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    if (!driver) {
-      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
-    }
-
-    const driverId = driver.id;
-
-    // Fetch driver loads
-    const driverLoads = await prisma.load.findMany({
-      where: { driverId },
-      include: {
-        stops: true,
-        items: true
-      },
-      orderBy: { createdAt: 'desc' }
-    }).catch(() => []);
-
-    // Get active/latest load
-    const activeLoads = driverLoads.filter(l => ['ASSIGNED', 'IN_TRANSIT', 'DISPATCHED', 'ACTIVE', 'PENDING'].includes(l.status));
-    const currentLoad = activeLoads[0] || driverLoads[0];
-
-    // Compute load rate
-    let rateSchedule = {};
-    if (driver.loadPaySchedule) {
-      try {
-        const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
-        if (Array.isArray(parsed)) {
-          parsed.forEach(item => {
-            if (item.amount) {
-              const k = (item.deliveryLocation || item.name || '').trim().toLowerCase();
-              if (k) rateSchedule[k] = parseFloat(item.amount);
-            }
-          });
-        }
-      } catch (e) {}
-    }
-
-    const computeLoadPay = (ld) => {
-      let amt = 0;
-      if (ld && ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
-        const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
-        if (m && m[1]) amt = parseFloat(m[1]);
-      }
-      if (amt <= 0 && ld && (ld.destination || ld.deliveryAddress)) {
-        const destStr = String(ld.destination || ld.deliveryAddress).toLowerCase();
-        for (const [k, v] of Object.entries(rateSchedule)) {
-          if (destStr.includes(k) || k.includes(destStr)) {
-            amt = v;
-            break;
-          }
-        }
-      }
-      if (amt <= 0 && driver.payRate && parseFloat(driver.payRate) > 0) {
-        amt = parseFloat(driver.payRate);
-      }
-      if (amt <= 0) {
-        amt = 1000.00; // Synchronized rate with Driver Dashboard ($1,000.00)
-      }
-      return amt;
-    };
-
-    const deliveredLoads = driverLoads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
-
-    let deliveredGross = 0;
-    deliveredLoads.forEach(ld => {
-      deliveredGross += computeLoadPay(ld);
-    });
-
-    let currentGrossNum = deliveredGross > 0 ? deliveredGross : (currentLoad ? computeLoadPay(currentLoad) : 1000.00);
-
-    const formattedGross = `$${currentGrossNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-    let activeLoadObj = null;
-    if (currentLoad) {
-      let origin = currentLoad.origin || (currentLoad.pickupAddress ? currentLoad.pickupAddress.split(',')[0].trim() : null);
-      let destination = currentLoad.destination || (currentLoad.deliveryAddress ? currentLoad.deliveryAddress.split(',')[0].trim() : null);
-
-      if (Array.isArray(currentLoad.stops) && currentLoad.stops.length > 0) {
-        const pStop = currentLoad.stops.find(s => s.type === 'PICKUP') || currentLoad.stops[0];
-        const dStop = currentLoad.stops.find(s => s.type === 'DROPOFF' || s.type === 'DELIVERY') || currentLoad.stops[currentLoad.stops.length - 1];
-        if (pStop && (!origin || origin.toLowerCase() === 'ggg')) {
-          origin = pStop.address?.split(',')[0]?.trim() || pStop.locationName || pStop.city || 'Sydney Metro Hub-demo';
-        }
-        if (dStop && (!destination || destination.toLowerCase() === 'asdff')) {
-          destination = dStop.address?.split(',')[0]?.trim() || dStop.locationName || dStop.city || 'Central Warehouse-Company';
-        }
-      }
-
-      if (!origin || origin.toLowerCase() === 'ggg') origin = 'Sydney Metro Hub-demo';
-      if (!destination || destination.toLowerCase() === 'asdff') destination = 'Central Warehouse-Company';
-
-      const poNum = currentLoad.loadNumber || currentLoad.loadRef || currentLoad.draftId || `PO-${currentLoad.id.slice(0, 6).toUpperCase()}`;
-
-      activeLoadObj = {
-        id: poNum,
-        poNumber: poNum,
-        origin: origin,
-        destination: destination,
-        startDate: currentLoad.createdAt ? new Date(currentLoad.createdAt).toLocaleDateString('en-US') : new Date().toLocaleDateString('en-US'),
-        estFinish: currentLoad.deliveryEta ? new Date(currentLoad.deliveryEta).toLocaleDateString('en-US') : new Date(Date.now() + 86400000).toLocaleDateString('en-US'),
-        status: currentLoad.status === 'DELIVERED' ? 'DELIVERED' : (currentLoad.status === 'IN_TRANSIT' ? 'IN TRANSIT' : 'ASSIGNED')
-      };
-    } else {
-      activeLoadObj = {
-        id: 'PO-383310',
-        poNumber: 'PO-383310',
-        origin: 'Sydney Metro Hub-demo',
-        destination: 'Central Warehouse-Company',
-        startDate: new Date().toLocaleDateString('en-US'),
-        estFinish: new Date(Date.now() + 86400000).toLocaleDateString('en-US'),
-        status: 'ASSIGNED'
-      };
-    }
-
-    let payHistoryRecords = [];
-    if (deliveredLoads.length > 0) {
-      payHistoryRecords = deliveredLoads.map((ld) => {
-        const payAmt = computeLoadPay(ld);
-        const dateStr = ld.updatedAt ? new Date(ld.updatedAt).toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' }) : '24 Sep 2026';
-        return {
-          id: ld.id,
-          period: `${ld.loadNumber || ld.loadRef || 'PO-' + ld.id.slice(0, 6).toUpperCase()} (${ld.origin || 'Sydney Metro Hub-demo'} ➔ ${ld.destination || 'Central Warehouse-Company'})`,
-          payDate: `Paid on ${dateStr}`,
-          netPay: `$${payAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-          status: 'Paid',
-          statusColor: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-          amount: payAmt
-        };
-      });
-    } else {
-      payHistoryRecords = [{
-        id: 'rec-1',
-        period: `${activeLoadObj.id} (${activeLoadObj.origin} ➔ ${activeLoadObj.destination})`,
-        payDate: `Scheduled for 26 Sep 2026`,
-        netPay: formattedGross,
-        status: 'Scheduled',
-        statusColor: 'bg-blue-50 text-blue-700 border-blue-200',
-        amount: currentGrossNum
-      }];
-    }
-
-    return sendSuccess(res, {
-      activeLoad: activeLoadObj,
-      currentPeriod: {
-        netPay: formattedGross,
-        grossEarnings: formattedGross,
-        totalDeductions: '$0.00',
-        payFrequency: 'Fortnightly',
-        nextPayment: {
-          date: 'Friday, 26 Sep 2026',
-          daysLeft: 3,
-          period: 'Current Active Pay Cycle',
-          estimatedNetPay: formattedGross,
-          status: 'Scheduled'
-        }
-      },
-      ytdSummary: {
-        totalEarnings: formattedGross,
-        netPayReceived: deliveredGross > 0 ? `$${deliveredGross.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : formattedGross,
-        pendingPayments: deliveredGross > 0 ? '$0.00' : formattedGross,
-        totalDeductions: '$0.00'
-      },
-      currentPayBreakdown: {
-        earnings: {
-          basePay: formattedGross,
-          loadAllowance: '$0.00',
-          distanceAllowance: '$0.00',
-          otherAllowances: '$0.00',
-          totalEarnings: formattedGross
-        },
-        deductions: {
-          paygTax: '$0.00',
-          superannuation: '$0.00',
-          totalDeductions: '$0.00'
-        },
-        estimatedNetPay: formattedGross
-      },
-      payHistory: payHistoryRecords,
-      totalSummary: {
-        totalGrossEarnings: formattedGross,
-        totalDeductions: '$0.00',
-        totalNetPaid: formattedGross
-      },
-      ytdEarningsBreakdown: {
-        total: formattedGross,
-        items: [
-          { name: 'Base Pay', amount: formattedGross },
-          { name: 'Load Allowances', amount: '$0.00' },
-          { name: 'Distance Allowances', amount: '$0.00' },
-          { name: 'Other Allowances', amount: '$0.00' },
-          { name: 'Bonuses', amount: '$0.00' }
-        ]
-      },
-      driverInfo: {
-        bankName: driver.bankName || 'ANZ Bank Australia',
-        bsbNumber: driver.routingNumber || '013-006',
-        accountNumber: driver.accountNumber ? `•••• ${driver.accountNumber.slice(-4)}` : '•••• 8821',
-        accountName: `${driver.firstName || ''} ${driver.lastName || ''}`.trim() || 'Driver'
-      }
-    });
-
-  } catch (error) {
-    next(error);
-  }
-};
-
-exports.getPayroll = exports.getPayrollData;
-
 exports.getPickupLoad = async (req, res, next) => {
   try {
     const driver = await resolveDriver(req);
@@ -4338,63 +3781,4 @@ exports.updatePickupItemStatus = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
-exports.getDeliveryPOD = async (req, res, next) => {
-  try {
-    const driver = await resolveDriver(req);
-    const loads = await prisma.load.findMany({
-      where: driver ? { driverId: driver.id } : {},
-      include: { items: true, stops: true },
-      orderBy: { createdAt: 'desc' }
-    }).catch(() => []);
-
-    const activeLoad = loads[0];
-    return sendSuccess(res, { load: activeLoad, items: activeLoad?.items || [] });
-  } catch (error) { next(error); }
-};
-
-exports.updateDeliveryItemStatus = async (req, res, next) => {
-  try {
-    const { itemId, status } = req.body;
-    if (prisma.loadItem && itemId) {
-      await prisma.loadItem.update({
-        where: { id: itemId },
-        data: { status: status || 'DELIVERED' }
-      }).catch(() => null);
-    }
-    return sendSuccess(res, { success: true });
-  } catch (error) { next(error); }
-};
-
-exports.scanDeliveryVinCode = async (req, res, next) => {
-  try {
-    const { vin } = req.body;
-    return sendSuccess(res, { scanned: true, vin });
-  } catch (error) { next(error); }
-};
-
-exports.confirmDeliveryPOD = async (req, res, next) => {
-  try {
-    const { loadId } = req.body;
-    const driver = await resolveDriver(req);
-    let targetLoadId = loadId;
-
-    if (!targetLoadId && driver) {
-      const activeLoad = await prisma.load.findFirst({
-        where: { driverId: driver.id },
-        orderBy: { createdAt: 'desc' }
-      }).catch(() => null);
-      if (activeLoad) targetLoadId = activeLoad.id;
-    }
-
-    let updatedLoad = null;
-    if (targetLoadId) {
-      updatedLoad = await prisma.load.update({
-        where: { id: targetLoadId },
-        data: { status: 'DELIVERED' }
-      }).catch(() => null);
-    }
-
-    return sendSuccess(res, { success: true, status: 'DELIVERED', load: updatedLoad });
-  } catch (error) { next(error); }
-};
 

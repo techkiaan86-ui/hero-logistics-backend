@@ -2478,7 +2478,159 @@ exports.updatePayrollRunStatus = async (req, res, next) => {
 };
 
 // ----------------------------------------------------------------------
-// 11. FINANCE MENU â€” Full CRUD
+// 10b. DRIVER LOAD SCHEDULE (PAYROLL PER LOAD RATES)
+// ----------------------------------------------------------------------
+const driverLoadScheduleStore = {};
+exports.driverLoadScheduleStore = driverLoadScheduleStore;
+
+exports.getDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    if (!driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = [
+        {
+          id: 'SCHED-101',
+          origin: 'Sydney',
+          destination: 'Melbourne',
+          rate: 500.00,
+          licenseClass: 'MC - Multi Combination',
+          status: 'Active',
+          notes: 'Standard interstate linehaul route rate',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-102',
+          origin: 'Melbourne',
+          destination: 'Adelaide',
+          rate: 1000.00,
+          licenseClass: 'HC - Heavy Combination',
+          status: 'Active',
+          notes: 'Express regional corridor rate',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-103',
+          origin: 'Sydney',
+          destination: 'Brisbane',
+          rate: 650.00,
+          licenseClass: 'All Classes',
+          status: 'Active',
+          notes: 'Coastal highway route schedule',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-104',
+          origin: 'Brisbane',
+          destination: 'Cairns',
+          rate: 1200.00,
+          licenseClass: 'MC - Multi Combination',
+          status: 'Active',
+          notes: 'North Queensland long distance linehaul',
+          updatedAt: new Date().toISOString()
+        }
+      ];
+    }
+
+    const { search, status, licenseClass } = req.query;
+    let list = driverLoadScheduleStore[companyId];
+
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(item => 
+        item.origin.toLowerCase().includes(q) || 
+        item.destination.toLowerCase().includes(q) || 
+        (item.licenseClass && item.licenseClass.toLowerCase().includes(q))
+      );
+    }
+    if (status && status !== 'All') {
+      list = list.filter(item => item.status === status);
+    }
+    if (licenseClass && licenseClass !== 'All') {
+      list = list.filter(item => item.licenseClass === licenseClass);
+    }
+
+    return sendSuccess(res, {
+      schedules: list,
+      totalCount: list.length,
+      activeCount: list.filter(s => s.status === 'Active').length,
+      avgRate: list.length > 0 ? (list.reduce((acc, curr) => acc + curr.rate, 0) / list.length) : 0
+    });
+  } catch (error) { next(error); }
+};
+
+exports.createDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { origin, destination, rate, licenseClass, status, notes } = req.body;
+
+    if (!origin || !destination || rate === undefined || rate === null) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Origin, Destination, and Per Load Rate are required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+
+    if (!driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = [];
+    }
+
+    const newSchedule = {
+      id: `SCHED-${Date.now().toString().slice(-6)}`,
+      origin: origin.trim(),
+      destination: destination.trim(),
+      rate: parseFloat(rate) || 0,
+      licenseClass: licenseClass || 'All Classes',
+      status: status || 'Active',
+      notes: notes || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    driverLoadScheduleStore[companyId].unshift(newSchedule);
+    return sendSuccess(res, newSchedule, HTTP_STATUS.CREATED);
+  } catch (error) { next(error); }
+};
+
+exports.updateDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { id } = req.params;
+    const { origin, destination, rate, licenseClass, status, notes } = req.body;
+
+    const list = driverLoadScheduleStore[companyId] || [];
+    const index = list.findIndex(item => item.id === id);
+
+    if (index === -1) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver load schedule entry not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const updated = {
+      ...list[index],
+      ...(origin && { origin: origin.trim() }),
+      ...(destination && { destination: destination.trim() }),
+      ...(rate !== undefined && { rate: parseFloat(rate) }),
+      ...(licenseClass && { licenseClass }),
+      ...(status && { status }),
+      ...(notes !== undefined && { notes }),
+      updatedAt: new Date().toISOString()
+    };
+
+    driverLoadScheduleStore[companyId][index] = updated;
+    return sendSuccess(res, updated);
+  } catch (error) { next(error); }
+};
+
+exports.deleteDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { id } = req.params;
+
+    if (driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = driverLoadScheduleStore[companyId].filter(item => item.id !== id);
+    }
+
+    return sendSuccess(res, { message: 'Driver load schedule entry deleted successfully' });
+  } catch (error) { next(error); }
+};
+
+// ----------------------------------------------------------------------
+// 11. FINANCE MENU — Full CRUD
 // ----------------------------------------------------------------------
 
 /**
@@ -4838,3 +4990,5 @@ exports.cleanupDriverDefaults = async (req, res, next) => {
     });
   } catch (error) { next(error); }
 };
+
+

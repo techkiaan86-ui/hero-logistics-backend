@@ -9,22 +9,59 @@
  */
 
 /**
- * Calculate Hourly Driver Pay
+ * Calculate Hourly Driver Pay (with Overtime Split & Superannuation)
  * @param {object} params
  * @param {number} params.hoursWorked
  * @param {number} params.hourlyRate
+ * @param {number} [params.ordinaryHoursPerDay=7.6]
+ * @param {number} [params.overtimeStartsAfter=7.6]
+ * @param {number} [params.overtimeRate]
+ * @param {number} [params.overtimeMultiplier=1.5]
+ * @param {number} [params.superPercentage=12.0]
  * @returns {object}
  */
-function calculateHourlyDriverPay({ hoursWorked = 0, hourlyRate = 0 }) {
-  const hours = Math.max(0, parseFloat(hoursWorked) || 0);
-  const rate = Math.max(0, parseFloat(hourlyRate) || 0);
-  const grossPay = Math.round(hours * rate * 100) / 100;
+function calculateHourlyDriverPay({
+  hoursWorked = 0,
+  hourlyRate = 0,
+  ordinaryHoursPerDay = 7.6,
+  overtimeStartsAfter = 7.6,
+  overtimeRate = null,
+  overtimeMultiplier = 1.5,
+  superPercentage = 12.0
+}) {
+  const totalHours = Math.max(0, parseFloat(hoursWorked) || 0);
+  const baseRate = Math.max(0, parseFloat(hourlyRate) || 0);
+  const ordLimit = Math.max(0, parseFloat(ordinaryHoursPerDay) || 7.6);
+  const otThreshold = Math.max(0, parseFloat(overtimeStartsAfter) || 7.6);
+
+  const ordinaryHours = Math.min(totalHours, otThreshold);
+  const overtimeHours = Math.max(0, totalHours - otThreshold);
+
+  let effectiveOtRate = parseFloat(overtimeRate) || 0;
+  if (effectiveOtRate <= 0) {
+    const mult = parseFloat(overtimeMultiplier) || 1.5;
+    effectiveOtRate = baseRate * mult;
+  }
+
+  const ordinaryPay = ordinaryHours * baseRate;
+  const overtimePay = overtimeHours * effectiveOtRate;
+  const grossPay = Math.round((ordinaryPay + overtimePay) * 100) / 100;
+
+  const superRate = parseFloat(superPercentage) || 12.0;
+  const superContribution = Math.round((ordinaryPay * (superRate / 100)) * 100) / 100;
 
   return {
     payType: 'Hourly',
-    units: hours,
+    units: totalHours,
     unitLabel: 'Hours',
-    rate,
+    rate: baseRate,
+    ordinaryHours: Math.round(ordinaryHours * 10) / 10,
+    overtimeHours: Math.round(overtimeHours * 10) / 10,
+    ordinaryPay: Math.round(ordinaryPay * 100) / 100,
+    overtimePay: Math.round(overtimePay * 100) / 100,
+    overtimeRate: effectiveOtRate,
+    superPercentage: superRate,
+    superContribution,
     grossPay,
     formattedGross: `$${grossPay.toFixed(2)}`
   };
@@ -209,7 +246,15 @@ function calculateDriverPayForLoad({ driver, load = null, distanceKm = 0, hoursW
     if (hrs <= 0 && load && load.estimatedHours) {
       hrs = parseFloat(load.estimatedHours) || 0;
     }
-    result = calculateHourlyDriverPay({ hoursWorked: hrs, hourlyRate: driverRate });
+    result = calculateHourlyDriverPay({
+      hoursWorked: hrs,
+      hourlyRate: driverRate,
+      ordinaryHoursPerDay: driver.ordinaryHoursPerDay,
+      overtimeStartsAfter: driver.overtimeStartsAfter,
+      overtimeRate: driver.overtimeRate,
+      overtimeMultiplier: driver.overtimeMultiplier,
+      superPercentage: driver.superPercentage
+    });
   }
 
   const grossPay = result.grossPay;

@@ -893,14 +893,26 @@ model Driver {
   hvCertified     Boolean   @default(false) // Heavy Vehicle
 
   // 5. Payroll Information
-  payType       String? // e.g., "Daily", "Hourly", "Per Load", "Per Km"
-  payRate       Float? // e.g., 350.00
-  loadPaySchedule String? @db.Text // JSON array of named per-load rate choices
-  bankName      String?
-  accountNumber String?
-  routingNumber String? // BSB
-  taxNumber     String? // TFN/ABN
-  superFund     String? // e.g., "AustralianSuper"
+  payType             String?   // e.g., "Daily", "Hourly", "Per Load", "Per Km"
+  payRate             Float?    // e.g., 350.00
+  ordinaryHoursPerDay Float?    @default(7.6)
+  overtimeStartsAfter Float?    @default(7.6)
+  overtimeRate        Float?    // Direct overtime rate per hour
+  overtimeMultiplier  Float?    @default(1.5)
+  taxFreeThreshold    Boolean   @default(true)
+  studyLoanDebt       Boolean   @default(false)
+  taxDeclReceived     Boolean   @default(true)
+  residencyStatus     String?   @default("Australian Resident")
+  paygCalcMethod      String?   @default("ATO Scale")
+  superPercentage     Float?    @default(12.0)
+  effectiveFrom       DateTime?
+  effectiveTo         DateTime?
+  loadPaySchedule     String?   @db.Text // JSON array of named per-load rate choices
+  bankName            String?
+  accountNumber       String?
+  routingNumber       String?   // BSB
+  taxNumber           String?   // TFN/ABN
+  superFund           String?   // e.g., "AustralianSuper"
 
   // 6. Availability & Preferences
   availableFrom    DateTime?
