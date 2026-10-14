@@ -206,7 +206,6 @@ exports.create = async (req, res, next) => {
     if (raw.billingTerms) payload.billingTerms = raw.billingTerms;
     if (raw.transportModules) payload.transportModules = typeof raw.transportModules === 'string' ? raw.transportModules : JSON.stringify(raw.transportModules);
     if (raw.branchId || req.user?.branchId) payload.branchId = raw.branchId || req.user?.branchId;
-    if (raw.accountManagerId) payload.accountManagerId = raw.accountManagerId;
 
     if (raw.type) {
       const tUpper = String(raw.type).toUpperCase();
@@ -223,7 +222,7 @@ exports.create = async (req, res, next) => {
     const data = await prisma.customer.create({
       data: payload,
       include: {
-        accountManager: true
+        loads: true
       }
     });
     return sendSuccess(res, data, HTTP_STATUS.CREATED);
@@ -238,6 +237,8 @@ exports.update = async (req, res, next) => {
     const { id } = req.params;
     const updateData = { ...req.body };
     delete updateData.companyId; // Never trust companyId from payload
+    delete updateData.accountManagerId;
+    delete updateData.manager;
     const companyId = getEffectiveCompanyId(req);
     
     const where = { id };

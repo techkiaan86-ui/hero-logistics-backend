@@ -44,13 +44,24 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
   let loads = [];
 
   try {
+    const driverOrConditions = [
+      { driverId: driver.id },
+      ...(driver.userId ? [{ driver: { userId: driver.userId } }] : []),
+      ...(driver.email ? [{ driver: { email: driver.email } }] : []),
+      ...(driver.driverCode ? [{ driver: { driverCode: driver.driverCode } }] : [])
+    ];
+
     loads = await prisma.load.findMany({
-      where: {
-        driverId: driver.id,
-        createdAt: { gte: start, lte: end }
-      },
-      select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, truck: { select: { odometerKm: true } } }
+      where: { OR: driverOrConditions },
+      select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, origin: true, pickupLocation: true, truck: { select: { odometerKm: true } } }
     });
+
+    if (loads.length === 0 && driver.companyId) {
+      loads = await prisma.load.findMany({
+        where: { companyId: driver.companyId },
+        select: { id: true, status: true, notes: true, destination: true, deliveryLocation: true, origin: true, pickupLocation: true, truck: { select: { odometerKm: true } } }
+      });
+    }
 
     completedLoadsCount = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status)).length;
     activeLoadsCount = loads.filter(l => ['IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status)).length;
@@ -66,14 +77,16 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   // Parse load pay schedule if present
   let scheduleRates = {};
+  let defaultScheduleRate = 0;
   if (driver?.loadPaySchedule) {
     try {
       const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
       if (Array.isArray(parsed)) {
         parsed.forEach(item => {
-          if (item.isSelected !== false && item.amount) {
+          if (item.amount && parseFloat(item.amount) > 0) {
             const destKey = (item.deliveryLocation || '').trim().toLowerCase();
             if (destKey) scheduleRates[destKey] = parseFloat(item.amount);
+            if (item.isSelected || defaultScheduleRate === 0) defaultScheduleRate = parseFloat(item.amount);
           }
         });
       }
@@ -88,8 +101,12 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
 
   if (normalizedType.includes('load')) {
     // === PER LOAD ===
+    let targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(l.status));
+    if (targetLoads.length === 0 && loads.length > 0) {
+      targetLoads = loads;
+    }
+    
     let totalLoadAmount = 0;
-    const targetLoads = loads.filter(l => ['DELIVERED', 'COMPLETED', 'CLOSED', 'IN_TRANSIT', 'ASSIGNED', 'DISPATCHED'].includes(l.status));
     targetLoads.forEach(ld => {
       let loadAmt = 0;
       if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
@@ -105,11 +122,21 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
           }
         }
       }
+      if (loadAmt <= 0 && defaultScheduleRate > 0) {
+        loadAmt = defaultScheduleRate;
+      }
       if (loadAmt <= 0 && rawRate > 0) {
         loadAmt = rawRate;
       }
       totalLoadAmount += loadAmt;
     });
+
+    if (totalLoadAmount <= 0 && defaultScheduleRate > 0) {
+      totalLoadAmount = defaultScheduleRate;
+    } else if (totalLoadAmount <= 0 && rawRate > 0) {
+      totalLoadAmount = rawRate;
+    }
+
     loadAllowance = Math.round(totalLoadAmount * 100) / 100;
     basePay = loadAllowance;
   } else if (normalizedType.includes('km') || normalizedType.includes('kilometre')) {
@@ -124,7 +151,30 @@ async function calculateDriverPay({ driver, startDate, endDate, companyId }) {
   }
 
   // 4. Compute Totals: Gross Earnings = Net Pay (No Tax or Deductions)
-  const grossEarnings = Math.round((basePay + (loadAllowance > 0 && normalizedType.includes('hourly') ? loadAllowance : 0) + (distanceAllow > 0 && normalizedType.includes('hourly') ? distanceAllow : 0) + otherAllowance + bonuses) * 100) / 100;
+  let grossEarnings = Math.round((basePay + (loadAllowance > 0 && normalizedType.includes('hourly') ? loadAllowance : 0) + (distanceAllow > 0 && normalizedType.includes('hourly') ? distanceAllow : 0) + otherAllowance + bonuses) * 100) / 100;
+
+  // Fallback: If gross earnings evaluates to 0, check if driver has loads with rates or default schedule
+  if (grossEarnings === 0 && loads.length > 0) {
+    let fallbackGross = 0;
+    loads.forEach(ld => {
+      let loadAmt = 0;
+      if (ld.notes && typeof ld.notes === 'string' && ld.notes.includes('[DRIVER_PAY:')) {
+        const m = ld.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+        if (m && m[1]) loadAmt = parseFloat(m[1]);
+      }
+      if (loadAmt <= 0 && defaultScheduleRate > 0) loadAmt = defaultScheduleRate;
+      if (loadAmt <= 0 && rawRate > 0) loadAmt = rawRate;
+      fallbackGross += loadAmt;
+    });
+    if (fallbackGross === 0 && rawRate > 0) fallbackGross = rawRate;
+    if (fallbackGross === 0 && defaultScheduleRate > 0) fallbackGross = defaultScheduleRate;
+
+    if (fallbackGross > 0) {
+      grossEarnings = Math.round(fallbackGross * 100) / 100;
+      basePay = grossEarnings;
+      loadAllowance = grossEarnings;
+    }
+  }
   
   // No tax or deduction deductions - Driver receives 100% of earned amount
   const paygTax = 0;

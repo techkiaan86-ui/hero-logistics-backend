@@ -403,9 +403,59 @@ exports.update = async (req, res, next) => {
       }, HTTP_STATUS.NOT_FOUND);
     }
 
+    // Handle stops update
+    let stopsInput = updateData.stops;
+    delete updateData.stops;
+    if (Array.isArray(stopsInput)) {
+      await prisma.routeStop.deleteMany({ where: { loadId: targetLoad.id } });
+      if (stopsInput.length > 0) {
+        const stopsToCreate = stopsInput.map((s, idx) => ({
+          loadId: targetLoad.id,
+          type: s.type ? s.type.toUpperCase() : (idx === 0 ? 'PICKUP' : 'DROPOFF'),
+          sequenceIndex: typeof s.sequenceIndex === 'number' ? s.sequenceIndex : idx,
+          address: s.address || s.location || 'Address Not Specified',
+          contactName: s.contactName || null,
+          contactPhone: s.contactPhone || null,
+          instructions: s.instructions || null
+        }));
+        await prisma.routeStop.createMany({ data: stopsToCreate });
+      }
+    }
+
+    // Handle items update
+    let itemsInput = updateData.items;
+    delete updateData.items;
+    if (Array.isArray(itemsInput)) {
+      await prisma.loadItem.deleteMany({ where: { loadId: targetLoad.id } });
+      if (itemsInput.length > 0) {
+        const itemsToCreate = itemsInput.map(i => ({
+          loadId: targetLoad.id,
+          stockRef: i.stockRef || i.rego || i.vin || 'ITEM-REF',
+          make: i.make || null,
+          model: i.model || null,
+          rego: i.rego || null,
+          vin: i.vin || null,
+          year: i.year ? parseInt(i.year) : null,
+          color: i.colour || i.color || null,
+          quantity: i.quantity ? parseInt(i.quantity) : 1,
+          weightKg: i.weightKg ? parseInt(i.weightKg) : (i.weight ? parseInt(i.weight) : null),
+          notes: i.notes || i.additionalNotes || null,
+          description: i.description || i.itemDescription || null
+        }));
+        await prisma.loadItem.createMany({ data: itemsToCreate });
+      }
+    }
+
     const data = await prisma.load.update({
       where: { id: targetLoad.id },
-      data: updateData
+      data: updateData,
+      include: {
+        driver: true,
+        truck: true,
+        customer: true,
+        stops: true,
+        items: true
+      }
     });
 
     if (updateData.status === 'DELIVERED') {

@@ -707,10 +707,10 @@ exports.calculatePayroll = async (req, res, next) => {
         const hours = info.minutes / 60 || 40;
         const basePay = Math.round(hours * 42.5 * 100) / 100;
         const grossEarnings = basePay;
-        const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
-        const superAmount = Math.round(grossEarnings * 0.11 * 100) / 100;
-        const totalDed = paygTax + superAmount;
-        const netPay = grossEarnings - paygTax;
+        const paygTax = 0;
+        const superAmount = 0;
+        const totalDed = 0;
+        const netPay = grossEarnings;
 
         totalGross += grossEarnings;
         totalNet += netPay;
@@ -734,9 +734,9 @@ exports.calculatePayroll = async (req, res, next) => {
             frequency: (frequency || 'WEEKLY').toUpperCase(),
             basePay,
             grossEarnings,
-            paygTax,
-            superAmount,
-            totalDeductions: totalDed,
+            paygTax: 0,
+            superAmount: 0,
+            totalDeductions: 0,
             netPay
           }
         });
@@ -745,10 +745,10 @@ exports.calculatePayroll = async (req, res, next) => {
       // --- Path 2: No approved timesheets — use form-entered manual values ---
       const firstDriver = await prisma.driver.findFirst({ where: companyId ? { companyId } : {} });
       const manualGross = parseFloat(grossPay) || 0;
-      const manualDed = parseFloat(totalDeductions || deductions) || 0;
-      const manualPayg = Math.round(manualGross * 0.15 * 100) / 100;
-      const manualSuper = Math.round(manualGross * 0.11 * 100) / 100;
-      const manualNet = manualDed > 0 ? (manualGross - manualDed) : (manualGross - manualPayg);
+      const manualDed = 0;
+      const manualPayg = 0;
+      const manualSuper = 0;
+      const manualNet = manualGross;
 
       if (firstDriver) {
         const parseDate = (d) => {
@@ -767,9 +767,9 @@ exports.calculatePayroll = async (req, res, next) => {
             frequency: (frequency || 'WEEKLY').toUpperCase(),
             basePay: manualGross,
             grossEarnings: manualGross,
-            paygTax: manualPayg,
-            superAmount: manualSuper,
-            totalDeductions: manualDed > 0 ? manualDed : (manualPayg + manualSuper),
+            paygTax: 0,
+            superAmount: 0,
+            totalDeductions: 0,
             netPay: manualNet
           }
         });

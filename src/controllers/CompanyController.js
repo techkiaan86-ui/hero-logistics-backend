@@ -56,6 +56,17 @@ exports.getAll = async (req, res, next) => {
             include: {
               plan: true
             }
+          },
+          users: {
+            where: {
+              role: 'COMPANY_ADMIN'
+            },
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              role: true
+            }
           }
         }
       }),
@@ -276,43 +287,151 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// Update Company with Optimistic Concurrency check
+// Update Company with full scalar and relational user/subscription handling
 exports.update = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const updateData = { ...req.body };
-    
-    const where = { id };
-    // if (req.tenantId) where.tenantId = req.tenantId;
+    const targetId = req.params.id;
 
-    // Check version if optimistic concurrency is required
-    const ifMatch = req.headers['if-match'];
-    if (ifMatch) {
-      where.version = parseInt(ifMatch.replace(/"/g, ''), 10);
-    }
-
-    try {
-      const data = await prisma.company.update({
-        where,
-        data: updateData
-      });
-      return sendSuccess(res, data);
-    } catch (e) {
-      if (e.code === 'P2025') {
-        if (ifMatch) {
-          return sendError(res, {
-            code: ERROR_CODES.RESOURCE_CONFLICT,
-            message: 'Resource was updated by another user or does not exist.'
-          }, HTTP_STATUS.CONFLICT);
-        }
-        return sendError(res, {
-          code: ERROR_CODES.NOT_FOUND,
-          message: 'Company not found'
-        }, HTTP_STATUS.NOT_FOUND);
+    // Find company by primary key id or tenantId
+    const company = await prisma.company.findFirst({
+      where: {
+        OR: [{ id: targetId }, { tenantId: targetId }]
+      },
+      include: {
+        users: { where: { role: 'COMPANY_ADMIN' } },
+        tenantSubscription: true
       }
-      throw e;
+    });
+
+    if (!company) {
+      return sendError(res, {
+        code: ERROR_CODES.NOT_FOUND,
+        message: 'Company not found'
+      }, HTTP_STATUS.NOT_FOUND);
     }
+
+    const {
+      name,
+      adminEmail,
+      adminPassword,
+      planTier,
+      status,
+      accountManager,
+      country,
+      trialExpiry
+    } = req.body;
+
+    // 1. Prepare scalar fields for Company model
+    const companyUpdateData = {};
+    if (name !== undefined && name !== null && name.trim()) companyUpdateData.name = name.trim();
+    if (status !== undefined && status !== null) companyUpdateData.status = status;
+    if (adminEmail !== undefined && adminEmail !== null) companyUpdateData.adminEmail = adminEmail.trim() || null;
+    if (accountManager !== undefined) companyUpdateData.accountManager = accountManager ? accountManager.trim() : null;
+    if (country !== undefined) companyUpdateData.country = country ? String(country).trim() : null;
+    if (trialExpiry !== undefined) companyUpdateData.trialExpiry = trialExpiry ? new Date(trialExpiry) : null;
+
+    let updatedCompany = company;
+    if (Object.keys(companyUpdateData).length > 0) {
+      updatedCompany = await prisma.company.update({
+        where: { id: company.id },
+        data: companyUpdateData
+      });
+    }
+
+    // 2. Handle updating or creating COMPANY_ADMIN User
+    const cleanEmail = adminEmail !== undefined ? (adminEmail ? adminEmail.trim() : null) : company.adminEmail;
+
+    if (cleanEmail || (adminPassword && typeof adminPassword === 'string' && adminPassword.trim())) {
+      const existingAdminUser = company.users && company.users.length > 0 ? company.users[0] : null;
+
+      if (existingAdminUser) {
+        const userUpdateData = {};
+        if (cleanEmail && cleanEmail !== existingAdminUser.email) {
+          userUpdateData.email = cleanEmail;
+        }
+        if (adminPassword && typeof adminPassword === 'string' && adminPassword.trim()) {
+          userUpdateData.password = await bcrypt.hash(adminPassword.trim(), 10);
+        }
+
+        if (Object.keys(userUpdateData).length > 0) {
+          await prisma.user.update({
+            where: { id: existingAdminUser.id },
+            data: userUpdateData
+          });
+        }
+      } else if (cleanEmail) {
+        const initialPassword = adminPassword && typeof adminPassword === 'string' && adminPassword.trim()
+          ? adminPassword.trim()
+          : `HeroSetup_${Date.now().toString(36)}`;
+        const hashedPassword = await bcrypt.hash(initialPassword, 10);
+
+        try {
+          await prisma.user.create({
+            data: {
+              email: cleanEmail,
+              password: hashedPassword,
+              name: `${updatedCompany.name} Admin`,
+              role: 'COMPANY_ADMIN',
+              companyId: updatedCompany.id,
+              status: 'ACTIVE'
+            }
+          });
+        } catch (uErr) {
+          console.warn('Could not auto-create missing company admin user on update:', uErr.message);
+        }
+      }
+    }
+
+    // 3. Handle updating TenantSubscription if planTier is provided
+    if (planTier && typeof planTier === 'string') {
+      const cleanPlanName = planTier.replace(/ Tier$/i, '').trim();
+      const plan = await prisma.subscriptionPlan.findFirst({
+        where: { name: cleanPlanName }
+      }) || await prisma.subscriptionPlan.findFirst({
+        where: { name: { contains: cleanPlanName.split(' ')[0] } }
+      });
+
+      if (plan) {
+        if (company.tenantSubscription) {
+          await prisma.tenantSubscription.update({
+            where: { id: company.tenantSubscription.id },
+            data: {
+              planId: plan.id,
+              amount: plan.monthlyPrice
+            }
+          });
+        } else {
+          await prisma.tenantSubscription.create({
+            data: {
+              subId: `SUB-${Date.now()}`,
+              companyId: company.id,
+              planId: plan.id,
+              status: 'ACTIVE',
+              amount: plan.monthlyPrice,
+              nextRenewal: new Date(new Date().setMonth(new Date().getMonth() + 1))
+            }
+          });
+        }
+      }
+    }
+
+    // 4. Fetch full updated company to return
+    const result = await prisma.company.findUnique({
+      where: { id: company.id },
+      include: {
+        tenantSubscription: { include: { plan: true } },
+        users: { where: { role: 'COMPANY_ADMIN' }, select: { id: true, email: true, name: true, role: true } }
+      }
+    });
+
+    return sendSuccess(res, result || updatedCompany);
   } catch (error) {
+    if (error.code === 'P2002') {
+      return sendError(res, {
+        code: ERROR_CODES.VALIDATION_ERROR,
+        message: 'Administrator Email or unique field is already in use by another account.'
+      }, HTTP_STATUS.BAD_REQUEST);
+    }
     next(error);
   }
 };

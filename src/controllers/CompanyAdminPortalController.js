@@ -317,13 +317,110 @@ exports.updateLoad = async (req, res, next) => {
       else delete payload.priority;
     }
 
+    // Extract stops, items, and driverPay before cleaning
+    const stops = payload.stops;
+    const items = payload.items;
+    const newDriverPay = payload.driverPay ? parseFloat(payload.driverPay) : null;
+
+    delete payload.stops;
+    delete payload.items;
+
+    // Clean non-schema and auto-generated fields
+    delete payload.id;
+    delete payload.createdAt;
+    delete payload.updatedAt;
+    delete payload.companyId;
+    delete payload.customerName;
+    delete payload.driverName;
+    delete payload.truckRego;
+    delete payload.trailerRego;
+    delete payload.pickupLocation;
+    delete payload.deliveryLocation;
+    delete payload.pickupAddress;
+    delete payload.deliveryAddress;
+    delete payload.pickupDate;
+    delete payload.deliveryDate;
+    delete payload.scheduledDate;
+    delete payload.totalWeight;
+    delete payload.weight;
+    delete payload.rate;
+    delete payload.rateUSD;
+    delete payload.price;
+    delete payload.revenue;
+    delete payload.distance;
+    delete payload.pickupStopId;
+    delete payload.driverPay;
+    delete payload.driverRate;
+    delete payload.customerRate;
+    delete payload.documents;
+    delete payload.customer;
+    delete payload.driver;
+    delete payload.truck;
+    delete payload.trailer;
+
+    // Remove empty/invalid relation IDs to prevent foreign key errors
+    if (!payload.customerId) delete payload.customerId;
+    if (!payload.driverId) delete payload.driverId;
+    if (!payload.truckId) delete payload.truckId;
+    if (!payload.trailerId) delete payload.trailerId;
+    if (!payload.branchId) delete payload.branchId;
+
+    // If driverPay changed, update the notes to reflect new DRIVER_PAY value
+    if (newDriverPay !== null && newDriverPay > 0) {
+      const baseNotes = (payload.notes || targetLoad.notes || '')
+        .replace(/\[DRIVER_PAY:[^\]]+\]/g, '')
+        .trim();
+      payload.notes = `${baseNotes} [DRIVER_PAY:${newDriverPay}]`.trim();
+    }
+
+    // Handle nested relation updates for stops
+    if (Array.isArray(stops)) {
+      payload.stops = {
+        deleteMany: {},
+        create: stops.map((s, idx) => {
+          let sType = (s.type || (idx === 0 ? 'PICKUP' : 'DROPOFF')).toUpperCase();
+          if (sType.includes('PICK')) sType = 'PICKUP';
+          else sType = 'DROPOFF';
+          return {
+            type: sType,
+            sequenceIndex: s.sequenceIndex ?? idx,
+            address: s.address || 'Location Stop',
+            contactName: s.contactName || null,
+            contactPhone: s.contactPhone || null,
+            scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : null
+          };
+        })
+      };
+    }
+
+    // Handle nested relation updates for items
+    if (Array.isArray(items)) {
+      payload.items = {
+        deleteMany: {},
+        create: items.map(item => ({
+          stockRef: item.stockRef || item.stockRec || item.rego || item.rcog || item.vin || item.description || 'ITEM-REF',
+          description: item.description || item.itemDescription || item.type || 'Freight Item',
+          category: item.type || item.category || 'General Freight',
+          make: item.make || null,
+          model: item.model || null,
+          rego: item.rego || item.rcog || null,
+          vin: item.vin || null,
+          year: item.year ? parseInt(String(item.year).replace(/[^0-9]/g, ''), 10) || null : null,
+          color: item.colour || item.color || null,
+          quantity: item.quantity ? parseInt(String(item.quantity).replace(/[^0-9]/g, ''), 10) || 1 : 1,
+          weightKg: item.weightValue || (item.weight ? parseInt(String(item.weight).replace(/[^0-9]/g, ''), 10) || 0 : 0),
+          notes: typeof item.notes === 'string' ? item.notes : (item.details || JSON.stringify(item))
+        }))
+      };
+    }
+
     const data = await prisma.load.update({
       where: { id: targetLoad.id },
       data: payload,
       include: { driver: true, truck: true, trailer: true, customer: true, stops: true, items: true }
     });
 
-    // P0 requirement: When transitioned to DELIVERED or COMPLETED, automatically credit driver payroll and generate draft invoice
+    // P0: When transitioning to DELIVERED or COMPLETED, auto-credit payroll
     if (payload.status === 'DELIVERED' || payload.status === 'COMPLETED') {
       try {
         await exports.autoGenerateLoadInvoice(data.id, data.companyId);
@@ -335,9 +432,51 @@ exports.updateLoad = async (req, res, next) => {
       }
     }
 
+    // P1: If driverPay changed and load is ALREADY delivered, recalculate driver PayPeriod
+    const isAlreadyDelivered = ['DELIVERED', 'COMPLETED', 'CLOSED'].includes(targetLoad.status);
+    const effectiveDriverId = (payload.driverId || targetLoad.driverId);
+    if (newDriverPay !== null && newDriverPay > 0 && isAlreadyDelivered && effectiveDriverId) {
+      try {
+        const payPeriod = await prisma.payPeriod.findFirst({
+          where: {
+            driverId: effectiveDriverId,
+            status: { in: ['DRAFT', 'PROCESSING', 'PENDING'] }
+          },
+          orderBy: { createdAt: 'desc' }
+        }).catch(() => null);
+
+        if (payPeriod) {
+          // Recalculate: subtract old pay (from notes) and add new pay
+          let oldPay = 0;
+          const oldNotes = targetLoad.notes || '';
+          const oldPayMatch = oldNotes.match(/\[DRIVER_PAY:([0-9.]+)/);
+          if (oldPayMatch && oldPayMatch[1]) oldPay = parseFloat(oldPayMatch[1]);
+
+          const currentLoadAllowance = parseFloat(payPeriod.loadAllowance || 0);
+          const adjustment = newDriverPay - oldPay;
+          const newLoadAllowance = Math.max(0, currentLoadAllowance + adjustment);
+          const newGross = Math.round((newLoadAllowance + parseFloat(payPeriod.basePay || 0) + parseFloat(payPeriod.distanceAllow || 0) + parseFloat(payPeriod.otherAllowance || 0) + parseFloat(payPeriod.bonuses || 0)) * 100) / 100;
+
+          await prisma.payPeriod.update({
+            where: { id: payPeriod.id },
+            data: {
+              loadAllowance: newLoadAllowance,
+              grossEarnings: newGross,
+              netPay: newGross
+            }
+          }).catch(e => console.warn('PayPeriod update on driverPay change:', e?.message));
+
+          console.log(`[updateLoad] PayPeriod updated: driverId=${effectiveDriverId}, oldPay=${oldPay}, newPay=${newDriverPay}, adjustment=${adjustment}`);
+        }
+      } catch (payErr) {
+        console.warn('PayPeriod sync on driverPay change:', payErr?.message);
+      }
+    }
+
     return sendSuccess(res, data);
   } catch (error) { next(error); }
 };
+
 
 exports.deleteLoad = async (req, res, next) => {
   try {
@@ -544,6 +683,32 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
         }
       }
     }
+    if (!tripCredit || tripCredit === 0) {
+      // Check driver.loadPaySchedule if driver has saved load pay options
+      if (driver.loadPaySchedule) {
+        try {
+          const parsed = typeof driver.loadPaySchedule === 'string' ? JSON.parse(driver.loadPaySchedule) : driver.loadPaySchedule;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const destStr = String(load.destination || load.deliveryLocation || '').trim().toLowerCase();
+            const origStr = String(load.origin || load.pickupLocation || '').trim().toLowerCase();
+            let matched = parsed.find(item => {
+              if (!item.amount) return false;
+              const pLoc = (item.pickupLocation || '').trim().toLowerCase();
+              const dLoc = (item.deliveryLocation || '').trim().toLowerCase();
+              const pMatch = !pLoc || origStr.includes(pLoc) || pLoc.includes(origStr);
+              const dMatch = !dLoc || destStr.includes(dLoc) || dLoc.includes(destStr);
+              return pMatch && dMatch;
+            });
+            if (!matched) {
+              matched = parsed.find(item => item.isSelected && parseFloat(item.amount) > 0) || parsed.find(item => parseFloat(item.amount) > 0);
+            }
+            if (matched && parseFloat(matched.amount) > 0) {
+              tripCredit = parseFloat(matched.amount);
+            }
+          }
+        } catch (e) {}
+      }
+    }
 
     // 4. Resolve Active PayPeriod (or create new DRAFT PayPeriod for driver)
     const now = new Date();
@@ -597,10 +762,10 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
     const bonuses = payPeriod.bonuses || 0;
 
     const grossEarnings = Math.round((newBasePay + newLoadAllowance + newDistanceAllow + otherAllowance + bonuses) * 100) / 100;
-    const paygTax = Math.round(grossEarnings * 0.15 * 100) / 100;
-    const superAmount = Math.round(grossEarnings * 0.11 * 100) / 100;
-    const totalDeductions = Math.round((paygTax + superAmount) * 100) / 100;
-    const netPay = Math.round((grossEarnings - totalDeductions) * 100) / 100;
+    const paygTax = 0;
+    const superAmount = 0;
+    const totalDeductions = 0;
+    const netPay = grossEarnings; // 100% payout - no tax/deduction cuts
 
     // 6. Save Updated PayPeriod
     const updatedPayPeriod = await prisma.payPeriod.update({
@@ -610,9 +775,9 @@ exports.autoCreditDriverPayroll = async (loadId, driverId, companyId, customCred
         distanceAllow: newDistanceAllow,
         basePay: newBasePay,
         grossEarnings,
-        paygTax,
-        superAmount,
-        totalDeductions,
+        paygTax: 0,
+        superAmount: 0,
+        totalDeductions: 0,
         netPay
       }
     });
@@ -2313,7 +2478,159 @@ exports.updatePayrollRunStatus = async (req, res, next) => {
 };
 
 // ----------------------------------------------------------------------
-// 11. FINANCE MENU â€” Full CRUD
+// 10b. DRIVER LOAD SCHEDULE (PAYROLL PER LOAD RATES)
+// ----------------------------------------------------------------------
+const driverLoadScheduleStore = {};
+exports.driverLoadScheduleStore = driverLoadScheduleStore;
+
+exports.getDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    if (!driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = [
+        {
+          id: 'SCHED-101',
+          origin: 'Sydney',
+          destination: 'Melbourne',
+          rate: 500.00,
+          licenseClass: 'MC - Multi Combination',
+          status: 'Active',
+          notes: 'Standard interstate linehaul route rate',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-102',
+          origin: 'Melbourne',
+          destination: 'Adelaide',
+          rate: 1000.00,
+          licenseClass: 'HC - Heavy Combination',
+          status: 'Active',
+          notes: 'Express regional corridor rate',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-103',
+          origin: 'Sydney',
+          destination: 'Brisbane',
+          rate: 650.00,
+          licenseClass: 'All Classes',
+          status: 'Active',
+          notes: 'Coastal highway route schedule',
+          updatedAt: new Date().toISOString()
+        },
+        {
+          id: 'SCHED-104',
+          origin: 'Brisbane',
+          destination: 'Cairns',
+          rate: 1200.00,
+          licenseClass: 'MC - Multi Combination',
+          status: 'Active',
+          notes: 'North Queensland long distance linehaul',
+          updatedAt: new Date().toISOString()
+        }
+      ];
+    }
+
+    const { search, status, licenseClass } = req.query;
+    let list = driverLoadScheduleStore[companyId];
+
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(item => 
+        item.origin.toLowerCase().includes(q) || 
+        item.destination.toLowerCase().includes(q) || 
+        (item.licenseClass && item.licenseClass.toLowerCase().includes(q))
+      );
+    }
+    if (status && status !== 'All') {
+      list = list.filter(item => item.status === status);
+    }
+    if (licenseClass && licenseClass !== 'All') {
+      list = list.filter(item => item.licenseClass === licenseClass);
+    }
+
+    return sendSuccess(res, {
+      schedules: list,
+      totalCount: list.length,
+      activeCount: list.filter(s => s.status === 'Active').length,
+      avgRate: list.length > 0 ? (list.reduce((acc, curr) => acc + curr.rate, 0) / list.length) : 0
+    });
+  } catch (error) { next(error); }
+};
+
+exports.createDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { origin, destination, rate, licenseClass, status, notes } = req.body;
+
+    if (!origin || !destination || rate === undefined || rate === null) {
+      return sendError(res, { code: ERROR_CODES.VALIDATION_ERROR, message: 'Origin, Destination, and Per Load Rate are required' }, HTTP_STATUS.BAD_REQUEST);
+    }
+
+    if (!driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = [];
+    }
+
+    const newSchedule = {
+      id: `SCHED-${Date.now().toString().slice(-6)}`,
+      origin: origin.trim(),
+      destination: destination.trim(),
+      rate: parseFloat(rate) || 0,
+      licenseClass: licenseClass || 'All Classes',
+      status: status || 'Active',
+      notes: notes || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    driverLoadScheduleStore[companyId].unshift(newSchedule);
+    return sendSuccess(res, newSchedule, HTTP_STATUS.CREATED);
+  } catch (error) { next(error); }
+};
+
+exports.updateDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { id } = req.params;
+    const { origin, destination, rate, licenseClass, status, notes } = req.body;
+
+    const list = driverLoadScheduleStore[companyId] || [];
+    const index = list.findIndex(item => item.id === id);
+
+    if (index === -1) {
+      return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver load schedule entry not found' }, HTTP_STATUS.NOT_FOUND);
+    }
+
+    const updated = {
+      ...list[index],
+      ...(origin && { origin: origin.trim() }),
+      ...(destination && { destination: destination.trim() }),
+      ...(rate !== undefined && { rate: parseFloat(rate) }),
+      ...(licenseClass && { licenseClass }),
+      ...(status && { status }),
+      ...(notes !== undefined && { notes }),
+      updatedAt: new Date().toISOString()
+    };
+
+    driverLoadScheduleStore[companyId][index] = updated;
+    return sendSuccess(res, updated);
+  } catch (error) { next(error); }
+};
+
+exports.deleteDriverLoadSchedule = async (req, res, next) => {
+  try {
+    const companyId = await resolveCompanyId(req) || 'default';
+    const { id } = req.params;
+
+    if (driverLoadScheduleStore[companyId]) {
+      driverLoadScheduleStore[companyId] = driverLoadScheduleStore[companyId].filter(item => item.id !== id);
+    }
+
+    return sendSuccess(res, { message: 'Driver load schedule entry deleted successfully' });
+  } catch (error) { next(error); }
+};
+
+// ----------------------------------------------------------------------
+// 11. FINANCE MENU — Full CRUD
 // ----------------------------------------------------------------------
 
 /**
@@ -4673,3 +4990,5 @@ exports.cleanupDriverDefaults = async (req, res, next) => {
     });
   } catch (error) { next(error); }
 };
+
+

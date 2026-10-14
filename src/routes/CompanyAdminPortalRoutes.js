@@ -113,6 +113,17 @@ router.get('/payroll/driver-pay', ctrl.getDriverPayBreakdown);                  
 router.get('/payroll/timesheets', ctrl.getTimesheetsSummary);                          // timesheet summary
 router.get('/payroll/export', ctrl.exportPayroll);                                     // CSV export data
 
+// Driver Load Schedule Routes
+router.get('/payroll/driver-load-schedules', ctrl.getDriverLoadSchedule);                  // list route pay rates
+router.post('/payroll/driver-load-schedules', ctrl.createDriverLoadSchedule);               // add route pay rate
+router.put('/payroll/driver-load-schedules/:id', ctrl.updateDriverLoadSchedule);            // update route pay rate
+router.delete('/payroll/driver-load-schedules/:id', ctrl.deleteDriverLoadSchedule);         // delete route pay rate
+
+router.get('/payroll/load-schedule', ctrl.getDriverLoadSchedule);
+router.post('/payroll/load-schedule', ctrl.createDriverLoadSchedule);
+router.put('/payroll/load-schedule/:id', ctrl.updateDriverLoadSchedule);
+router.delete('/payroll/load-schedule/:id', ctrl.deleteDriverLoadSchedule);
+
 // 11. Finance — Full CRUD
 router.get('/finance', ctrl.getFinance);
 router.post('/finance/invoices', ctrl.createInvoice);
