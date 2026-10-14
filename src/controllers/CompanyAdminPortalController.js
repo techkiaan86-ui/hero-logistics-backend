@@ -3545,8 +3545,18 @@ exports.updateSettings = async (req, res, next) => {
     const {
       companyName, tradingName, abn, acn, registeredAddress,
       city, state, postcode, country, phone, email, website,
-      description, branding, taxCompliance, financials
+      description, branding, taxCompliance, financials, driverFormConfig
     } = req.body;
+
+    let existingHours = {};
+    if (driverFormConfig) {
+      try {
+        const existingComp = await prisma.company.findUnique({ where: { id: companyId }, select: { defaultBusinessHours: true } });
+        if (existingComp?.defaultBusinessHours && typeof existingComp.defaultBusinessHours === 'object') {
+          existingHours = existingComp.defaultBusinessHours;
+        }
+      } catch (e) {}
+    }
 
     const company = await prisma.company.update({
       where: { id: companyId },
@@ -3555,7 +3565,13 @@ exports.updateSettings = async (req, res, next) => {
         ...(phone && { phone }),
         ...(email && { email }),
         ...(registeredAddress && { address: registeredAddress }),
-        ...(website && { websiteUrl: website })
+        ...(website && { websiteUrl: website }),
+        ...(driverFormConfig && {
+          defaultBusinessHours: {
+            ...existingHours,
+            driverFormConfig
+          }
+        })
       }
     });
 
