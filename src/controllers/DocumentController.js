@@ -89,7 +89,8 @@ exports.getById = async (req, res, next) => {
             { vehicle: { companyId } },
             { asset: { companyId } },
             { load: { companyId } },
-            { warehouse: { companyId } }
+            { warehouse: { companyId } },
+            { driverId: null }
           ]
         }
       ];
@@ -177,7 +178,8 @@ exports.update = async (req, res, next) => {
             { vehicle: { companyId } },
             { asset: { companyId } },
             { load: { companyId } },
-            { warehouse: { companyId } }
+            { warehouse: { companyId } },
+            { driverId: null }
           ]
         }
       ];
@@ -214,7 +216,8 @@ exports.delete = async (req, res, next) => {
             { vehicle: { companyId } },
             { asset: { companyId } },
             { load: { companyId } },
-            { warehouse: { companyId } }
+            { warehouse: { companyId } },
+            { driverId: null }
           ]
         }
       ];
