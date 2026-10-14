@@ -190,4 +190,8 @@ router.put('/subscription-billing/plan', ctrl.updateSubscriptionPlan);
 // Utility: one-time cleanup of wrongly-defaulted driver fields
 router.get('/cleanup-driver-defaults', ctrl.cleanupDriverDefaults);
 
+// 22. Driver Form Configuration (Dynamic Mandatory, Optional & Custom Fields)
+router.get('/driver-form-config', ctrl.getDriverFormConfig);
+router.put('/driver-form-config', ctrl.updateDriverFormConfig);
+
 module.exports = router;

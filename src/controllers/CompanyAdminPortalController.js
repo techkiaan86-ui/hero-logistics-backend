@@ -4991,4 +4991,67 @@ exports.cleanupDriverDefaults = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// 22. Driver Form Configuration (Dynamic Mandatory, Optional & Custom Fields)
+const driverFormConfigsStore = {};
+
+exports.getDriverFormConfig = async (req, res, next) => {
+  try {
+    let companyId = await resolveCompanyId(req);
+    if (!companyId && req.user?.companyId) companyId = req.user.companyId;
+    if (!companyId) companyId = 'default';
+
+    let config = driverFormConfigsStore[companyId] || null;
+
+    if (!config && companyId !== 'default') {
+      try {
+        const company = await prisma.company.findUnique({
+          where: { id: companyId },
+          select: { defaultBusinessHours: true }
+        });
+        if (company?.defaultBusinessHours && company.defaultBusinessHours.driverFormConfig) {
+          config = company.defaultBusinessHours.driverFormConfig;
+          driverFormConfigsStore[companyId] = config;
+        }
+      } catch (dbErr) {
+        // graceful fallback
+      }
+    }
+
+    return sendSuccess(res, config || null);
+  } catch (error) { next(error); }
+};
+
+exports.updateDriverFormConfig = async (req, res, next) => {
+  try {
+    let companyId = await resolveCompanyId(req);
+    if (!companyId && req.user?.companyId) companyId = req.user.companyId;
+    if (!companyId) companyId = 'default';
+
+    const config = req.body;
+    driverFormConfigsStore[companyId] = config;
+
+    if (companyId !== 'default') {
+      try {
+        const company = await prisma.company.findUnique({
+          where: { id: companyId },
+          select: { defaultBusinessHours: true }
+        });
+        const existingData = (company?.defaultBusinessHours && typeof company.defaultBusinessHours === 'object') ? company.defaultBusinessHours : {};
+        await prisma.company.update({
+          where: { id: companyId },
+          data: {
+            defaultBusinessHours: {
+              ...existingData,
+              driverFormConfig: config
+            }
+          }
+        });
+      } catch (dbErr) {
+        console.warn('DB driverFormConfig storage notice:', dbErr.message);
+      }
+    }
+
+    return sendSuccess(res, { success: true, config, message: 'Driver form field configuration updated' });
+  } catch (error) { next(error); }
+};
 

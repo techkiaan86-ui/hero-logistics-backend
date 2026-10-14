@@ -207,7 +207,7 @@ exports.getDashboardMetrics = async (req, res) => {
         mrrGrowth: mrrGrowthStr,
         totalCompanies,
         activeCompanies,
-        paidCompanies: activeCompanies - trialCompanies,
+        paidCompanies: activeSubscriptions.length,
         mtdCompanies,
         trialCompanies,
         activeUsers: onlineUserSessionsCount,
