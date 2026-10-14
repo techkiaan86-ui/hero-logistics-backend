@@ -153,18 +153,21 @@ exports.create = async (req, res, next) => {
     if (req.user && req.user.role === 'DISPATCHER' && req.user.branchId && !req.user.permissions?.includes('dispatch.cross_branch.view')) {
       branchIdVal = req.user.branchId;
     } else if (!branchIdVal && (payload.branch || payload.Branch)) {
-      const bName = String(payload.branch || payload.Branch).trim();
-      if (bName && bName !== '—') {
-        const foundBranch = await prisma.branch.findFirst({
-          where: { name: { equals: bName }, companyId: effectiveCompanyId }
+      const rawBranchStr = String(payload.branch || payload.Branch).trim();
+      if (rawBranchStr && rawBranchStr !== '—') {
+        const branchNames = rawBranchStr.split(',').map(s => s.trim()).filter(Boolean);
+        const primaryBranchName = branchNames[0] || rawBranchStr;
+        let foundBranch = await prisma.branch.findFirst({
+          where: { name: { equals: primaryBranchName }, companyId: effectiveCompanyId }
         }).catch(() => null);
-        if (foundBranch) {
-          branchIdVal = foundBranch.id;
-        } else {
-          const createdBranch = await prisma.branch.create({
-            data: { name: bName, companyId: effectiveCompanyId }
+        if (!foundBranch && primaryBranchName) {
+          foundBranch = await prisma.branch.create({
+            data: { name: primaryBranchName, companyId: effectiveCompanyId }
           }).catch(() => null);
-          if (createdBranch) branchIdVal = createdBranch.id;
+        }
+        if (foundBranch) branchIdVal = foundBranch.id;
+        if (rawBranchStr.includes(',')) {
+          payload.preferredRegions = rawBranchStr;
         }
       }
     }
@@ -467,18 +470,21 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   if (rawPayload.branchId !== undefined) {
     data.branchId = rawPayload.branchId;
   } else if (rawPayload.branch || rawPayload.Branch) {
-    const bName = String(rawPayload.branch || rawPayload.Branch).trim();
-    if (bName && bName !== '—') {
-      const foundBranch = await prisma.branch.findFirst({
-        where: { name: { equals: bName }, companyId }
+    const rawBranchStr = String(rawPayload.branch || rawPayload.Branch).trim();
+    if (rawBranchStr && rawBranchStr !== '—') {
+      const branchNames = rawBranchStr.split(',').map(s => s.trim()).filter(Boolean);
+      const primaryBranchName = branchNames[0] || rawBranchStr;
+      let foundBranch = await prisma.branch.findFirst({
+        where: { name: { equals: primaryBranchName }, companyId }
       }).catch(() => null);
-      if (foundBranch) {
-        data.branchId = foundBranch.id;
-      } else {
-        const createdBranch = await prisma.branch.create({
-          data: { name: bName, companyId }
+      if (!foundBranch && primaryBranchName) {
+        foundBranch = await prisma.branch.create({
+          data: { name: primaryBranchName, companyId }
         }).catch(() => null);
-        if (createdBranch) data.branchId = createdBranch.id;
+      }
+      if (foundBranch) data.branchId = foundBranch.id;
+      if (rawBranchStr.includes(',')) {
+        data.preferredRegions = rawBranchStr;
       }
     }
   }
