@@ -912,6 +912,7 @@ model Driver {
   accountNumber       String?
   routingNumber       String?   // BSB
   taxNumber           String?   // TFN/ABN
+  tfnStatus           String?   @default("Provided")
   superFund           String?   // e.g., "AustralianSuper"
 
   // 6. Availability & Preferences

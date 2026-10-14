@@ -264,6 +264,7 @@ exports.create = async (req, res, next) => {
       accountNumber: payload.accountNumber || payload.AccountNumber || null,
       routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
       taxNumber: payload.taxNumber || payload.TaxNumber || null,
+      tfnStatus: payload.tfnStatus || (payload.taxNumber ? 'Provided' : 'Not Provided'),
       superFund: payload.superFund || payload.SuperannuationFund || null
     };
 
@@ -465,6 +466,9 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   }
   if (rawPayload.taxNumber !== undefined || rawPayload.TaxNumber !== undefined) {
     data.taxNumber = rawPayload.taxNumber || rawPayload.TaxNumber || null;
+  }
+  if (rawPayload.tfnStatus !== undefined) {
+    data.tfnStatus = rawPayload.tfnStatus || null;
   }
   if (rawPayload.superFund !== undefined || rawPayload.SuperannuationFund !== undefined) {
     data.superFund = rawPayload.superFund || rawPayload.SuperannuationFund || null;
