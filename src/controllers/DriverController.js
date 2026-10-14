@@ -31,7 +31,8 @@ exports.getAll = async (req, res, next) => {
           branch: true,
           manager: true,
           currentVehicle: true,
-          loads: { take: 5, orderBy: { createdAt: 'desc' } }
+          loads: { take: 5, orderBy: { createdAt: 'desc' } },
+          documents: true
         }
       }),
       prisma.driver.count({ where })
@@ -71,7 +72,8 @@ exports.getById = async (req, res, next) => {
         currentVehicle: true,
         loads: true,
         preStartChecklists: { take: 5, orderBy: { createdAt: 'desc' } },
-        timesheets: { take: 5, orderBy: { createdAt: 'desc' } }
+        timesheets: { take: 5, orderBy: { createdAt: 'desc' } },
+        documents: true
       }
     });
     
@@ -319,7 +321,8 @@ exports.create = async (req, res, next) => {
         data: driverData,
         include: {
           branch: true,
-          manager: true
+          manager: true,
+          documents: true
         }
       });
       return sendSuccess(res, data, HTTP_STATUS.CREATED);
@@ -331,7 +334,7 @@ exports.create = async (req, res, next) => {
         }
         const data = await prisma.driver.create({
           data: driverData,
-          include: { branch: true, manager: true }
+          include: { branch: true, manager: true, documents: true }
         });
         return sendSuccess(res, data, HTTP_STATUS.CREATED);
       }

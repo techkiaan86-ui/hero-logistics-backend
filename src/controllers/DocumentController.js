@@ -123,6 +123,21 @@ exports.create = async (req, res, next) => {
     const payload = { ...req.body };
     delete payload.companyId; // Remove companyId scalar property not present in Document schema
 
+    if (payload.expiryDate) {
+      const parsedDate = new Date(payload.expiryDate);
+      payload.expiryDate = isNaN(parsedDate.getTime()) ? null : parsedDate;
+    } else {
+      payload.expiryDate = null;
+    }
+
+    if (!payload.type) {
+      payload.type = 'Compliance Document';
+    }
+
+    if (!payload.fileUrl) {
+      payload.fileUrl = 'document_placeholder.pdf';
+    }
+
     const data = await prisma.document.create({
       data: payload,
       include: { driver: true, vehicle: true, asset: true, load: true, warehouse: true }
@@ -139,6 +154,15 @@ exports.update = async (req, res, next) => {
     const { id } = req.params;
     const updateData = { ...req.body };
     delete updateData.companyId;
+
+    if (updateData.expiryDate !== undefined) {
+      if (updateData.expiryDate) {
+        const parsedDate = new Date(updateData.expiryDate);
+        updateData.expiryDate = isNaN(parsedDate.getTime()) ? null : parsedDate;
+      } else {
+        updateData.expiryDate = null;
+      }
+    }
     const companyId = resolveCompanyId(req);
 
     const findWhere = { id };
