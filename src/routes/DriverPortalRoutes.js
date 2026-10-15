@@ -64,6 +64,9 @@ router.post('/timesheets/submit', DriverPortalController.submitTimesheet);
 
 // Payroll & Pay History
 router.get('/payroll', DriverPortalController.getPayrollData);
+router.get('/payroll/:id/payslip', DriverPortalController.downloadPayslip);
+router.get('/payroll/payslip/:id', DriverPortalController.downloadPayslip);
+router.get('/payslip/:id', DriverPortalController.downloadPayslip);
 router.post('/payroll/settings', DriverPortalController.updatePaymentSettings);
 router.post('/payroll/bank', DriverPortalController.updateBankDetails);
 
