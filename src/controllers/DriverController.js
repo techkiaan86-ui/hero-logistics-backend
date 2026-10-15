@@ -265,7 +265,18 @@ exports.create = async (req, res, next) => {
       routingNumber: payload.routingNumber || payload.BSBRouting || payload.bsbNumber || null,
       taxNumber: payload.taxNumber || payload.TaxNumber || null,
       tfnStatus: payload.tfnStatus || (payload.taxNumber ? 'Provided' : 'Not Provided'),
-      superFund: payload.superFund || payload.SuperannuationFund || null
+      superFund: payload.superFund || payload.SuperannuationFund || null,
+      // 6. Preferences & Availability
+      preferredVehicle: payload.preferredVehicle || payload.PreferredVehicle || null,
+      preferredRoutes: payload.preferredRoutes || payload.PreferredRoutes || null,
+      preferredRegions: payload.preferredRegions || payload.PreferredRegions || null,
+      maxDistPerTripKm: (payload.maxDistPerTripKm || payload.MaximumDistancePerTripKM) ? parseInt(payload.maxDistPerTripKm || payload.MaximumDistancePerTripKM, 10) : null,
+      dgCertified: payload.dgCertified === true || payload.DangerousGoodsCertified === 'Yes',
+      hvCertified: payload.hvCertified === true || payload.HeavyVehicleCertified === 'Yes',
+      availableFrom: (payload.availableFrom || payload.AvailableFrom) ? new Date(payload.availableFrom || payload.AvailableFrom) : null,
+      weeklyHoursLimit: (payload.weeklyHoursLimit || payload.WeeklyHoursLimit) ? parseInt(payload.weeklyHoursLimit || payload.WeeklyHoursLimit, 10) : null,
+      maxHoursPerDay: (payload.maxHoursPerDay || payload.MaxWorkingHoursDay) ? parseInt(payload.maxHoursPerDay || payload.MaxWorkingHoursDay, 10) : null,
+      restDaysPerWeek: (payload.restDaysPerWeek || payload.RestDaysWeek) ? parseInt(payload.restDaysPerWeek || payload.RestDaysWeek, 10) : null
     };
 
     if (payload.dob || payload.DateofBirth) {
@@ -519,6 +530,22 @@ const sanitizeDriverPayload = async (rawPayload, companyId) => {
   }
   if (rawPayload.hvCertified !== undefined || rawPayload.HeavyVehicleCertified !== undefined) {
     data.hvCertified = rawPayload.hvCertified === true || rawPayload.HeavyVehicleCertified === 'Yes';
+  }
+  if (rawPayload.availableFrom !== undefined || rawPayload.AvailableFrom !== undefined) {
+    const af = rawPayload.availableFrom || rawPayload.AvailableFrom;
+    data.availableFrom = af ? new Date(af) : null;
+  }
+  if (rawPayload.weeklyHoursLimit !== undefined || rawPayload.WeeklyHoursLimit !== undefined) {
+    const whl = parseInt(rawPayload.weeklyHoursLimit || rawPayload.WeeklyHoursLimit, 10);
+    data.weeklyHoursLimit = !isNaN(whl) ? whl : null;
+  }
+  if (rawPayload.maxHoursPerDay !== undefined || rawPayload.MaxWorkingHoursDay !== undefined) {
+    const mhd = parseInt(rawPayload.maxHoursPerDay || rawPayload.MaxWorkingHoursDay, 10);
+    data.maxHoursPerDay = !isNaN(mhd) ? mhd : null;
+  }
+  if (rawPayload.restDaysPerWeek !== undefined || rawPayload.RestDaysWeek !== undefined) {
+    const rdw = parseInt(rawPayload.restDaysPerWeek || rawPayload.RestDaysWeek, 10);
+    data.restDaysPerWeek = !isNaN(rdw) ? rdw : null;
   }
 
   const manualAge = rawPayload.age || rawPayload.Age;
