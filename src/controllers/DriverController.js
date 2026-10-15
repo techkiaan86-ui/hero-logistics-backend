@@ -187,6 +187,25 @@ exports.create = async (req, res, next) => {
     let inputEmail = (payload.email || payload.EmailAddress || payload.Username || payload.username || '').trim() || null;
     let inputCode = (payload.driverCode || payload.EmployeeIDManualEditOption || '').trim() || null;
 
+    if (inputEmail) {
+      const cleanEmail = inputEmail.toLowerCase();
+      const existingDriverWithEmail = await prisma.driver.findFirst({
+        where: { email: cleanEmail },
+        include: { branch: true, manager: true, documents: true }
+      });
+      if (existingDriverWithEmail) {
+        // Double-click protection: if created within the last 20 seconds, return the driver gracefully
+        const timeDiff = Date.now() - new Date(existingDriverWithEmail.createdAt || 0).getTime();
+        if (timeDiff < 20000) {
+          return sendSuccess(res, existingDriverWithEmail, HTTP_STATUS.OK);
+        }
+        return sendError(res, {
+          code: 'DRIVER_EMAIL_EXISTS',
+          message: `A driver with email "${inputEmail}" is already registered. Please use a unique email address.`
+        }, HTTP_STATUS.BAD_REQUEST);
+      }
+    }
+
     if (inputCode) {
       const existingCode = await prisma.driver.findFirst({ where: { driverCode: inputCode } });
       if (existingCode) {
@@ -321,7 +340,15 @@ exports.create = async (req, res, next) => {
           });
         }
         if (linkedUser) {
-          driverData.userId = linkedUser.id;
+          const userAlreadyUsed = await prisma.driver.findFirst({
+            where: { userId: linkedUser.id }
+          });
+          if (!userAlreadyUsed) {
+            driverData.userId = linkedUser.id;
+          } else {
+            console.log(`User ${linkedUser.id} already linked to another driver. Skipping userId link.`);
+            driverData.userId = null;
+          }
         }
       } catch (uErr) {
         console.warn('Could not auto-create user during driver creation:', uErr.message);
@@ -340,15 +367,23 @@ exports.create = async (req, res, next) => {
       return sendSuccess(res, data, HTTP_STATUS.CREATED);
     } catch (createErr) {
       if (createErr.code === 'P2002') {
+        delete driverData.userId; // Crucial: avoid repeating unique violation on userId!
         driverData.email = `driver_${Date.now()}@herologistics.com.au`;
         if (driverData.driverCode) {
           driverData.driverCode = `${driverData.driverCode}_${Date.now()}`;
         }
-        const data = await prisma.driver.create({
-          data: driverData,
-          include: { branch: true, manager: true, documents: true }
-        });
-        return sendSuccess(res, data, HTTP_STATUS.CREATED);
+        try {
+          const fallbackData = await prisma.driver.create({
+            data: driverData,
+            include: { branch: true, manager: true, documents: true }
+          });
+          return sendSuccess(res, fallbackData, HTTP_STATUS.CREATED);
+        } catch (retryErr) {
+          return sendError(res, {
+            code: 'DRIVER_CREATE_CONFLICT',
+            message: 'A driver with this information already exists. Please use unique details.'
+          }, HTTP_STATUS.BAD_REQUEST);
+        }
       }
       throw createErr;
     }
