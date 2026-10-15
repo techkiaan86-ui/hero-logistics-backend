@@ -1640,10 +1640,23 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
   try {
     const driver = await resolveDriver(req);
     if (!driver) return sendError(res, { code: ERROR_CODES.NOT_FOUND, message: 'Driver profile not found' }, 404);
-    const { loadId, mode, notes, signature, photos } = req.body;
+    const { loadId, mode, notes, signature, photos, signatureName } = req.body;
     let targetLoadId = loadId;
 
-    if (!targetLoadId && driver) {
+    if (targetLoadId && prisma.load) {
+      const foundLoad = await prisma.load.findFirst({
+        where: {
+          OR: [
+            { id: String(targetLoadId) },
+            { loadNumber: String(targetLoadId) },
+            { loadRef: String(targetLoadId) }
+          ]
+        }
+      }).catch(() => null);
+      if (foundLoad) targetLoadId = foundLoad.id;
+    }
+
+    if (!targetLoadId && driver && prisma.load) {
       const activeLoad = await prisma.load.findFirst({
         where: {
           driverId: driver.id,
@@ -1654,12 +1667,26 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
       if (activeLoad) targetLoadId = activeLoad.id;
     }
 
-    const signaturePath = signature ? saveBase64Image(signature, 'signatures') : null;
+    // Default safe signature if driver confirmed delivery directly
+    const defaultSvgSig = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="100"><text x="10" y="50" font-family="sans-serif" font-size="16" fill="%230f172a">Receiver Verified - Direct Delivery</text></svg>';
+    const rawSignature = signature || defaultSvgSig;
+    const signaturePath = (typeof rawSignature === 'string' && rawSignature.startsWith('data:image'))
+      ? saveBase64Image(rawSignature, 'signatures')
+      : (typeof rawSignature === 'string' ? rawSignature : null);
+
+    const signee = signatureName || (mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver');
 
     if (targetLoadId && prisma.load) {
       await prisma.load.updateMany({
         where: { id: targetLoadId },
-        data: { status: 'DELIVERED', dispatchNotes: notes || undefined }
+        data: { status: 'DELIVERED', deliveryEta: new Date(), dispatchNotes: notes || undefined }
+      }).catch(() => null);
+    }
+
+    if (targetLoadId && prisma.loadItem) {
+      await prisma.loadItem.updateMany({
+        where: { loadId: targetLoadId },
+        data: { status: 'DELIVERED' }
       }).catch(() => null);
     }
 
@@ -1668,7 +1695,7 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
         data: {
           driverId: driver.id,
           loadId: targetLoadId,
-          signeeName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
+          signeeName: signee,
           signatureUrl: signaturePath,
           deliveryNotes: notes || 'Delivery completed'
         }
@@ -1680,7 +1707,7 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
         data: {
           driverId: driver.id,
           loadId: targetLoadId || undefined,
-          recipientName: mode === 'after-hours' ? 'After-Hours Safe Drop' : 'Auto World Sydney Receiver',
+          recipientName: signee,
           signatureUrl: signaturePath,
           photoUrls: photos ? JSON.stringify(photos) : null,
           notes: notes || 'Delivery completed',
@@ -1708,6 +1735,8 @@ exports.confirmDeliveryPOD = async (req, res, next) => {
 
     return sendSuccess(res, {
       success: true,
+      status: 'DELIVERED',
+      loadId: targetLoadId,
       signatureUrl: signaturePath,
       invoiceGenerated: !!autoInvoice,
       invoiceNumber: autoInvoice?.invoiceNumber || null,
