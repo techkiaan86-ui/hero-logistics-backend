@@ -96,7 +96,17 @@ exports.getLoads = async (req, res, next) => {
       let uiStatus = item.status;
       if (item.status === 'IN_TRANSIT') uiStatus = 'ACTIVE';
       if (item.status === 'DELIVERED') uiStatus = 'COMPLETED';
-      return { ...item, status: uiStatus };
+      let dPay = null;
+      if (item.notes && item.notes.includes('[DRIVER_PAY:')) {
+        const m = item.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+        if (m && m[1]) dPay = parseFloat(m[1]);
+      }
+      let aRate = null;
+      if (item.notes && item.notes.includes('[AGREED_RATE:')) {
+        const m = item.notes.match(/\[AGREED_RATE:([0-9.]+)/);
+        if (m && m[1]) aRate = parseFloat(m[1]);
+      }
+      return { ...item, status: uiStatus, driverPay: dPay, rate: aRate };
     });
 
     const meta = buildPaginationMeta(total, currentPage, pageSize, req.query.sort);
@@ -4255,7 +4265,29 @@ exports.getLoadById = async (req, res, next) => {
     if (load.status === 'IN_TRANSIT') uiStatus = 'ACTIVE';
     if (load.status === 'DELIVERED') uiStatus = 'COMPLETED';
 
-    return sendSuccess(res, { ...load, status: uiStatus });
+    let extractedRate = null;
+    if (load.notes && load.notes.includes('[AGREED_RATE:')) {
+      const m = load.notes.match(/\[AGREED_RATE:([0-9.]+)/);
+      if (m && m[1]) extractedRate = parseFloat(m[1]);
+    }
+    let extractedDriverPay = null;
+    if (load.notes && load.notes.includes('[DRIVER_PAY:')) {
+      const m = load.notes.match(/\[DRIVER_PAY:([0-9.]+)/);
+      if (m && m[1]) extractedDriverPay = parseFloat(m[1]);
+    }
+    let extractedScheduleTitle = null;
+    if (load.notes && load.notes.includes('[SCHEDULE:')) {
+      const m = load.notes.match(/\[SCHEDULE:([^\]]+)\]/);
+      if (m && m[1]) extractedScheduleTitle = m[1];
+    }
+
+    return sendSuccess(res, {
+      ...load,
+      status: uiStatus,
+      rate: extractedRate,
+      driverPay: extractedDriverPay,
+      loadScheduleTitle: extractedScheduleTitle
+    });
   } catch (error) { next(error); }
 };
 
